@@ -21,7 +21,7 @@ const ensureTicketAccess = async (ticketId: number, user: McpUserContext) => {
   return ticket;
 };
 
-const ensureAgentRunAccess = async (runId: number, user: McpUserContext) => {
+const ensureAgentRunAccess = async (runId: string, user: McpUserContext) => {
   const run = await db.getAgentRunWithSteps(runId);
   if (!run) throw new Error("Agent run not found");
   if (user.role !== "admin" && run.userId !== user.id) {
@@ -176,7 +176,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       description:
         "Get an Agent Run with summarized steps, tool calls, final output, and errors. Non-admin users only see their own runs.",
       inputSchema: {
-        id: z.number().int().positive(),
+        id: z.string().uuid(),
       },
       annotations: {
         readOnlyHint: true,
@@ -188,4 +188,3 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
     }
   );
 }
-

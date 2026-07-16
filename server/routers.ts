@@ -550,7 +550,7 @@ export const appRouter = router({
   // ============ Agent Runs Router ============
   agentRuns: router({
     getById: protectedProcedure
-      .input(z.object({ id: z.number().int().positive() }))
+      .input(z.object({ id: z.string().uuid() }))
       .query(async ({ input, ctx }) => {
         const run = await db.getAgentRunWithSteps(input.id);
         if (!run) {
@@ -580,7 +580,7 @@ export const appRouter = router({
       }),
 
     retry: protectedProcedure
-      .input(z.object({ id: z.number().int().positive() }))
+      .input(z.object({ id: z.string().uuid() }))
       .mutation(async ({ input, ctx }) => {
         const existingRun = await db.getAgentRunById(input.id);
         if (!existingRun) {

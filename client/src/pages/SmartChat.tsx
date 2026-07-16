@@ -23,6 +23,7 @@ import {
   AlertCircle,
   ArrowRight,
   ClipboardList,
+  Copy,
   ExternalLink,
   RefreshCcw,
   Send,
@@ -53,7 +54,7 @@ type ChatMessage = {
   content: string;
   relatedKnowledge?: RelatedKnowledge[];
   isStreaming?: boolean;
-  runId?: number;
+  runId?: string;
   agentEvents?: AgentEvent[];
   structuredOutput?: StructuredOutput;
   error?: string;
@@ -117,7 +118,7 @@ const buildTicketDraft = (message: ChatMessage, userPrompt: string) => {
     title: trimText(titleSource, 48) || "客服问题跟进",
     description: [
       "来源：智能客服对话",
-      message.runId ? `Agent Run：#${message.runId}` : "",
+      message.runId ? `Agent Run：${message.runId}` : "",
       userPrompt ? `用户问题：${userPrompt}` : "",
       "",
       "AI 摘要：",
@@ -143,7 +144,7 @@ const buildTicketDraft = (message: ChatMessage, userPrompt: string) => {
 };
 
 export default function SmartChat() {
-  useAuth({ redirectOnUnauthenticated: true });
+  const { user } = useAuth({ redirectOnUnauthenticated: true });
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -168,6 +169,7 @@ export default function SmartChat() {
         role: msg.role,
         content: msg.content,
         relatedKnowledge: msg.relatedKnowledge ?? [],
+        runId: msg.agentRunId ?? undefined,
       }))
     );
   }, [chatHistory]);
@@ -190,6 +192,15 @@ export default function SmartChat() {
         message.id === assistantId ? updater(message) : message
       )
     );
+  };
+
+  const copyRunId = async (runId: string) => {
+    try {
+      await navigator.clipboard.writeText(runId);
+      toast.success("Run ID 已复制");
+    } catch {
+      toast.error("复制失败，请手动选择 Run ID");
+    }
   };
 
   const sendMessage = async (content: string) => {
@@ -521,11 +532,51 @@ export default function SmartChat() {
                       ) : null}
 
                       {message.role === "assistant" &&
+                      user?.role === "admin" &&
+                      message.runId ? (
+                        <div className="mt-3 border-t border-gray-300 pt-3">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-gray-500">
+                                Agent Run ID
+                              </p>
+                              <code className="mt-1 block break-all font-mono text-xs text-gray-700">
+                                {message.runId}
+                              </code>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => copyRunId(message.runId!)}
+                                aria-label="复制 Run ID"
+                                title="复制 Run ID"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  setLocation(`/runs/${message.runId}`)
+                                }
+                              >
+                                <ExternalLink className="mr-2 h-4 w-4" />
+                                查看详情
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {message.role === "assistant" &&
                       !message.isStreaming &&
                       !message.error &&
                       message.content ? (
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-300 pt-3">
-                          {message.runId ? (
+                          {message.runId && user?.role !== "admin" ? (
                             <Button
                               type="button"
                               variant="outline"

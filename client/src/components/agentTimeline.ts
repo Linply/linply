@@ -5,12 +5,12 @@ export type AgentEvent = {
   argsSummary?: string;
   resultSummary?: string;
   content?: string;
-  runId?: number;
+  runId?: string;
 };
 
 export type AgentStep = {
   id: number;
-  runId: number;
+  runId: string;
   stepType: "thinking" | "tool_call" | "tool_result" | "final" | "error";
   toolName: string | null;
   argsSummary: string | null;
@@ -23,10 +23,10 @@ export type AgentStep = {
 export const agentEventToStep = (
   event: AgentEvent,
   index: number,
-  runId?: number
+  runId?: string
 ): AgentStep => ({
   id: index,
-  runId: event.runId ?? runId ?? 0,
+  runId: event.runId ?? runId ?? "",
   stepType: event.type,
   toolName: event.toolName ?? null,
   argsSummary: event.argsSummary ?? null,

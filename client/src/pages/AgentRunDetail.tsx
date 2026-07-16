@@ -62,11 +62,12 @@ const getMetadata = (metadata: unknown) => {
 
 export default function AgentRunDetail({ params }: AgentRunDetailProps) {
   const [, setLocation] = useLocation();
-  const runId = Number.parseInt(params.runId, 10);
+  const runId = params.runId;
+  const validRunId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId);
   const utils = trpc.useUtils();
   const { data: run, isLoading } = trpc.agentRuns.getById.useQuery(
     { id: runId },
-    { enabled: Number.isFinite(runId) }
+    { enabled: validRunId }
   );
   const retryMutation = trpc.agentRuns.retry.useMutation();
 
@@ -138,7 +139,7 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
               返回聊天
             </Button>
             <h1 className="text-3xl font-bold text-gray-900">
-              Agent Run #{run.id}
+              Agent Run {run.id}
             </h1>
             <p className="mt-1 text-sm text-gray-500">
               创建于{" "}

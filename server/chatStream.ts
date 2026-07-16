@@ -18,7 +18,7 @@ type SsePayload =
       type: "meta";
       relatedKnowledge: Array<{ id: number; title: string; category: string }>;
       llmProvider: string;
-      runId?: number;
+      runId?: string;
       structuredOutput?: StructuredAgentOutput;
     }
   | { type: "delta"; content: string }

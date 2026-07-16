@@ -11,23 +11,23 @@ import {
 } from "./chatService";
 
 export type AgentEvent =
-  | { type: "thinking"; message: string; runId?: number }
+  | { type: "thinking"; message: string; runId?: string }
   | {
       type: "tool_call";
       toolName: string;
       argsSummary: string;
-      runId?: number;
+      runId?: string;
     }
   | {
       type: "tool_result";
       toolName: string;
       resultSummary: string;
-      runId?: number;
+      runId?: string;
     }
-  | { type: "final"; content: string; runId?: number };
+  | { type: "final"; content: string; runId?: string };
 
 type AgentContext = {
-  runId?: number;
+  runId?: string;
   userId: number;
   role: "user" | "admin";
   ticketId?: number;
@@ -41,7 +41,7 @@ type RelatedKnowledgeSnapshot = Array<{
 }>;
 
 export type AgentChatResponse = {
-  runId: number;
+  runId: string;
   userMessage: string;
   assistantMessage: string;
   relatedKnowledge: RelatedKnowledgeSnapshot;
@@ -281,11 +281,11 @@ const requireOpenAiAgentConfig = () => {
   }
 };
 
-export const getAgentTraceId = (runId: number) =>
-  `trace_${runId.toString(16).padStart(32, "0").slice(-32)}`;
+export const getAgentTraceId = (runId: string) =>
+  `trace_${runId.replaceAll("-", "")}`;
 
 const getAgentRunMetadata = (
-  runId: number,
+  runId: string,
   mode: "stream" | "non_stream",
   extra?: Record<string, unknown>
 ) => ({
@@ -310,7 +310,7 @@ const agentModelProvider = () =>
   });
 
 const createAgentRunner = (
-  runId?: number,
+  runId?: string,
   mode?: "stream" | "non_stream",
   input?: {
     userId: number;
@@ -346,7 +346,7 @@ const ensureTicketAccess = async (context: AgentContext, ticketId: number) => {
   return ticket;
 };
 
-const persistAgentEvent = async (runId: number, event: AgentEvent) => {
+const persistAgentEvent = async (runId: string, event: AgentEvent) => {
   if (event.type === "thinking") {
     await db.addAgentRunStep({
       runId,
@@ -387,7 +387,7 @@ const createBlockedGuardrailRun = async (input: {
   userId: number;
   ticketId?: number;
   content: string;
-  retryOfRunId?: number;
+  retryOfRunId?: string;
   message: string;
   mode: "stream" | "non_stream";
 }) => {
@@ -730,7 +730,7 @@ export async function createAgentChatResponse(input: {
   userRole: "user" | "admin";
   ticketId?: number;
   content: string;
-  retryOfRunId?: number;
+  retryOfRunId?: string;
 }) {
   requireOpenAiAgentConfig();
   const guardrail = evaluateInputGuardrails(input.content);
@@ -759,6 +759,7 @@ export async function createAgentChatResponse(input: {
       userId: input.userId,
       role: "assistant",
       content: guardrail.message,
+      agentRunId: runId,
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
     });
@@ -855,6 +856,7 @@ export async function createAgentChatResponse(input: {
       userId: input.userId,
       role: "assistant",
       content: assistantContent,
+      agentRunId: runId,
       relatedKnowledgeIds: relatedKnowledgeSnapshot.map(kb => kb.id),
       relatedKnowledgeSnapshot,
       llmProvider: "openai-agents",
@@ -908,7 +910,7 @@ export async function streamAgentChatResponse(
     userRole: "user" | "admin";
     ticketId?: number;
     content: string;
-    retryOfRunId?: number;
+    retryOfRunId?: string;
   },
   signal: AbortSignal,
   emit: (event: AgentEvent) => void | Promise<void>,
@@ -949,6 +951,7 @@ export async function streamAgentChatResponse(
       userId: input.userId,
       role: "assistant",
       content: guardrail.message,
+      agentRunId: runId,
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
     });
@@ -1074,6 +1077,7 @@ export async function streamAgentChatResponse(
       userId: input.userId,
       role: "assistant",
       content: assistantContent,
+      agentRunId: runId,
       relatedKnowledgeIds: relatedKnowledgeSnapshot.map(kb => kb.id),
       relatedKnowledgeSnapshot,
       llmProvider: "openai-agents",

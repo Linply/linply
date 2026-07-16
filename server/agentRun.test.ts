@@ -175,21 +175,23 @@ describe("agent run lifecycle transitions", () => {
   });
 
   it("models failed and retry run recovery metadata", () => {
+    const failedRunId = "11111111-1111-4111-8111-111111111111";
+    const retryRunId = "22222222-2222-4222-8222-222222222222";
     const failedRun = {
-      id: 41,
+      id: failedRunId,
       status: "failed" as AgentRunStatus,
       input: "查询工单失败",
       error: "tool timeout",
     };
     const retryRun = {
-      id: 42,
+      id: retryRunId,
       status: "queued" as AgentRunStatus,
       retryOfRunId: failedRun.id,
       input: failedRun.input,
     };
 
     expect(failedRun.status).toBe("failed");
-    expect(retryRun.retryOfRunId).toBe(41);
+    expect(retryRun.retryOfRunId).toBe(failedRunId);
     expect(retryRun.input).toBe(failedRun.input);
   });
 
@@ -208,8 +210,9 @@ describe("agent run lifecycle transitions", () => {
 
 describe("agent handoff, tracing, and comparison metadata", () => {
   it("generates SDK-compatible stable trace ids", () => {
-    expect(getAgentTraceId(42)).toMatch(/^trace_[a-f0-9]{32}$/);
-    expect(getAgentTraceId(42)).toBe(getAgentTraceId(42));
+    const runId = "11111111-1111-4111-8111-111111111111";
+    expect(getAgentTraceId(runId)).toMatch(/^trace_[a-f0-9]{32}$/);
+    expect(getAgentTraceId(runId)).toBe(getAgentTraceId(runId));
   });
 
   it("evaluates handoff targets from structured output", () => {

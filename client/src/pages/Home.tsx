@@ -147,10 +147,9 @@ export default function Home() {
                   </p>
                   <div className="flex gap-2">
                     <Input
-                      inputMode="numeric"
-                      placeholder="Run ID"
+                      placeholder="Run UUID"
                       value={runId}
-                      onChange={(event) => setRunId(event.target.value.replace(/\D/g, ""))}
+                      onChange={(event) => setRunId(event.target.value.trim())}
                       onClick={(event) => event.stopPropagation()}
                     />
                     <Button

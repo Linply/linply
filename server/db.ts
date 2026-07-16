@@ -928,6 +928,7 @@ export async function saveChatMessage(data: {
     title: string;
     category: string;
   }>;
+  agentRunId?: string;
   llmProvider?: string;
   llmModel?: string;
 }) {
@@ -941,6 +942,7 @@ export async function saveChatMessage(data: {
     content: data.content,
     relatedKnowledgeIds: data.relatedKnowledgeIds ?? null,
     relatedKnowledgeSnapshot: data.relatedKnowledgeSnapshot ?? null,
+    agentRunId: data.agentRunId,
     llmProvider: data.llmProvider,
     llmModel: data.llmModel,
   });
@@ -1018,7 +1020,7 @@ export async function createAgentRun(data: {
   status?: AgentRunStatus;
   llmProvider?: string;
   llmModel?: string;
-  retryOfRunId?: number;
+  retryOfRunId?: string;
   metadata?: Record<string, unknown>;
 }) {
   const db = await getDb();
@@ -1042,7 +1044,7 @@ export async function createAgentRun(data: {
 }
 
 export async function updateAgentRun(
-  id: number,
+  id: string,
   data: Partial<{
     status: AgentRunStatus;
     finalOutput: string | null;
@@ -1070,7 +1072,7 @@ export async function updateAgentRun(
 }
 
 export async function addAgentRunStep(data: {
-  runId: number;
+  runId: string;
   stepType: AgentRunStepType;
   toolName?: string;
   argsSummary?: string;
@@ -1094,7 +1096,7 @@ export async function addAgentRunStep(data: {
   return result[0];
 }
 
-export async function getAgentRunById(id: number) {
+export async function getAgentRunById(id: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -1107,7 +1109,7 @@ export async function getAgentRunById(id: number) {
   return result.length > 0 ? result[0] : null;
 }
 
-export async function getAgentRunSteps(runId: number) {
+export async function getAgentRunSteps(runId: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -1118,7 +1120,7 @@ export async function getAgentRunSteps(runId: number) {
     .orderBy(agentRunSteps.createdAt, agentRunSteps.id);
 }
 
-export async function getAgentRunWithSteps(id: number) {
+export async function getAgentRunWithSteps(id: string) {
   const run = await getAgentRunById(id);
   if (!run) return null;
 

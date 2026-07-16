@@ -54,7 +54,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - **knowledge_base**：知识条目，含向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记（`conflictWith` / `conflictScore`）。
 - **knowledge_documents**：上传文档，记录解析状态、索引进度（`totalChunks`）等。
 - **chat_messages**：对话记录，保存引用的知识库条目快照。
-- **agent_runs**：Agent 单次运行记录，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
+- **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
 - **agent_run_steps**：Agent 运行步骤，记录 `thinking` / `tool_call` / `tool_result` / `final` / `error`。
 
 表结构以 `drizzle/schema.ts` 为准；变更通过 `pnpm db:generate` + `pnpm db:migrate` 管理。
@@ -90,7 +90,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 - Agent Run 状态：`queued` / `planning` / `running` / `waiting_approval` / `failed` / `completed`。
 - Agent Step 类型：`thinking` / `tool_call` / `tool_result` / `final` / `error`。
-- `/runs/:runId` 为 Agent Run 详情页，管理员可从首页「Agent Run 排查」输入 Run ID 跳转。
+- `/runs/:runId` 为 Agent Run 详情页，管理员可从聊天回复底部复制 Run UUID 或直接跳转，也可从首页「Agent Run 排查」输入 UUID。
 - 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；普通用户只能查看自己的 Run，管理员可查看全部。
 - `AGENT_TRACING_ENABLED=true` 时启用 OpenAI Agents tracing；trace 不包含敏感原始数据。
 

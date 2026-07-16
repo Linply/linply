@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
@@ -301,6 +302,7 @@ export const chatMessages = pgTable(
         category: string;
       }>
     >(), // 保存回答时引用的知识库标题/分类快照
+    agentRunId: uuid("agentRunId"), // Agent 模式下关联的运行 UUID
     llmProvider: varchar("llmProvider", { length: 32 }), // 生成该回复的 LLM provider
     llmModel: varchar("llmModel", { length: 128 }), // 生成该回复的模型
     createdAt: timestamp("createdAt", { withTimezone: true })
@@ -310,6 +312,7 @@ export const chatMessages = pgTable(
   table => ({
     userIdIdx: index("idx_userId_chat").on(table.userId),
     ticketIdIdx: index("idx_ticketId_chat").on(table.ticketId),
+    agentRunIdIdx: index("idx_chat_messages_agentRunId").on(table.agentRunId),
   })
 );
 
@@ -323,7 +326,7 @@ export type InsertChatMessage = typeof chatMessages.$inferInsert;
 export const agentRuns = pgTable(
   "agent_runs",
   {
-    id: serial("id").primaryKey(),
+    id: uuid("id").defaultRandom().primaryKey(),
     userId: integer("userId").notNull(),
     ticketId: integer("ticketId"),
     status: agentRunStatusEnum("status").default("queued").notNull(),
@@ -332,7 +335,7 @@ export const agentRuns = pgTable(
     error: text("error"),
     llmProvider: varchar("llmProvider", { length: 32 }),
     llmModel: varchar("llmModel", { length: 128 }),
-    retryOfRunId: integer("retryOfRunId"),
+    retryOfRunId: uuid("retryOfRunId"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
@@ -363,7 +366,7 @@ export const agentRunSteps = pgTable(
   "agent_run_steps",
   {
     id: serial("id").primaryKey(),
-    runId: integer("runId").notNull(),
+    runId: uuid("runId").notNull(),
     stepType: agentRunStepTypeEnum("stepType").notNull(),
     toolName: varchar("toolName", { length: 128 }),
     argsSummary: text("argsSummary"),
