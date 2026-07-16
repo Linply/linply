@@ -3,8 +3,7 @@
 ## 关键环境变量
 
 - `DATABASE_URL`：生产 PostgreSQL + pgvector 连接串。上线前执行 `pnpm db:migrate`。
-- `JWT_SECRET`：生产必须使用长随机串，避免沿用示例值。
-- `VITE_APP_ID` / `OAUTH_SERVER_URL` / `VITE_OAUTH_PORTAL_URL`：Manus OAuth 配置。
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD`：只用于首次运行 `pnpm auth:create-admin`，不要提交真实值。
 - `LLM_PROVIDER=openai`：使用 OpenAI Responses API。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容服务配置。
 - `CHAT_MODE=rag|agent`：`rag` 为直接 RAG，`agent` 为 OpenAI Agents SDK。
@@ -22,7 +21,7 @@
 
 ## 上线检查
 
-- 本地开发登录 `/api/dev-login` 只在 `NODE_ENV=development` 生效。
+- 登录与注册入口分别为 `/login` 和 `/register`，生产环境不提供免密开发登录。
 - 日志只记录 LLM/embedding provider、model、耗时、token 或维度等元信息，不记录用户原文。
 - OpenAI/API key、Authorization、cookie、password 类字段会在日志错误信息中脱敏。
 - `AGENT_TRACING_ENABLED=true` 时仍保持 `includeSensitiveData=false`。

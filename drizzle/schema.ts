@@ -9,6 +9,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
@@ -56,30 +57,60 @@ export const agentRunStepTypeEnum = pgEnum("agent_run_step_type", [
   "error",
 ]);
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = pgTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: serial("id").primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
+  name: varchar("name", { length: 80 }).notNull(),
+  email: varchar("email", { length: 320 }).notNull().unique(),
   role: userRoleEnum("role").default("user").notNull(),
+  avatarUrl: text("avatarUrl"),
+  emailVerifiedAt: timestamp("emailVerifiedAt", { withTimezone: true }),
+  disabledAt: timestamp("disabledAt", { withTimezone: true }),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn", { withTimezone: true }).defaultNow().notNull(),
+  lastSignedIn: timestamp("lastSignedIn", { withTimezone: true }),
 });
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+export const authAccounts = pgTable("auth_accounts", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 32 }).notNull(),
+  providerAccountId: varchar("providerAccountId", { length: 320 }).notNull(),
+  passwordHash: text("passwordHash"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  providerAccountUnique: uniqueIndex("idx_auth_accounts_provider_account")
+    .on(table.provider, table.providerAccountId),
+  userIdIdx: index("idx_auth_accounts_userId").on(table.userId),
+}));
+
+export type AuthAccount = typeof authAccounts.$inferSelect;
+export type InsertAuthAccount = typeof authAccounts.$inferInsert;
+
+export const sessions = pgTable("sessions", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("tokenHash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revokedAt", { withTimezone: true }),
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  userAgent: text("userAgent"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp("lastSeenAt", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("idx_sessions_userId").on(table.userId),
+  expiresAtIdx: index("idx_sessions_expiresAt").on(table.expiresAt),
+}));
+
+export type Session = typeof sessions.$inferSelect;
+export type InsertSession = typeof sessions.$inferInsert;
 
 /**
  * Tickets table - 工单表

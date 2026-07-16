@@ -1,9 +1,30 @@
 import postgres from "postgres";
 import dotenv from "dotenv";
+import { randomBytes, scrypt } from "node:crypto";
 
 dotenv.config();
 
 const DATABASE_URL = process.env.DATABASE_URL;
+
+const hashPassword = async (password) => {
+  const salt = randomBytes(16);
+  const derivedKey = await new Promise((resolve, reject) => {
+    scrypt(password, salt, 64, {
+      N: 16_384,
+      r: 8,
+      p: 1,
+      maxmem: 64 * 1024 * 1024,
+    }, (error, key) => error ? reject(error) : resolve(key));
+  });
+  return [
+    "scrypt",
+    16_384,
+    8,
+    1,
+    salt.toString("base64url"),
+    derivedKey.toString("base64url"),
+  ].join("$");
+};
 
 async function seedData() {
   if (!DATABASE_URL) {
@@ -16,18 +37,34 @@ async function seedData() {
   try {
     console.log("开始插入模拟数据...");
 
+    const seedEmail = (process.env.SEED_USER_EMAIL || "demo@example.com").trim().toLowerCase();
+    const generatedPassword = !process.env.SEED_USER_PASSWORD;
+    const seedPassword = process.env.SEED_USER_PASSWORD || randomBytes(18).toString("base64url");
+    const passwordHash = await hashPassword(seedPassword);
+
     const [seedUser] = await sql`
-      INSERT INTO users ("openId", name, email, "loginMethod", role)
-      VALUES (${ "seed-user" }, ${ "示例用户" }, ${ "demo@example.com" }, ${ "seed" }, ${ "user" })
-      ON CONFLICT ("openId") DO UPDATE SET
+      INSERT INTO users (name, email, role, "lastSignedIn")
+      VALUES (${ "示例用户" }, ${ seedEmail }, ${ "user" }, now())
+      ON CONFLICT (email) DO UPDATE SET
         name = EXCLUDED.name,
-        email = EXCLUDED.email,
-        "loginMethod" = EXCLUDED."loginMethod",
-        role = EXCLUDED.role
+        role = EXCLUDED.role,
+        "updatedAt" = now()
       RETURNING id
     `;
     const seedUserId = seedUser.id;
+    await sql`
+      INSERT INTO auth_accounts ("userId", provider, "providerAccountId", "passwordHash")
+      VALUES (${ seedUserId }, ${ "password" }, ${ seedEmail }, ${ passwordHash })
+      ON CONFLICT (provider, "providerAccountId") DO UPDATE SET
+        "userId" = EXCLUDED."userId",
+        "passwordHash" = EXCLUDED."passwordHash",
+        "updatedAt" = now()
+    `;
     console.log(`已准备示例用户，ID: ${seedUserId}`);
+    console.log(`示例用户邮箱: ${seedEmail}`);
+    if (generatedPassword) {
+      console.log(`本次生成的示例用户密码: ${seedPassword}`);
+    }
 
     const knowledgeData = [
       {

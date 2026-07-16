@@ -13,11 +13,18 @@ import AdminDashboard from "./pages/AdminDashboard";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import AgentRunDetail from "./pages/AgentRunDetail";
 import RagDebug from "./pages/RagDebug";
+import AuthPage from "./pages/AuthPage";
 
 function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/login"}>
+        <AuthPage mode="login" />
+      </Route>
+      <Route path={"/register"}>
+        <AuthPage mode="register" />
+      </Route>
       <Route path={"/tickets"} component={TicketList} />
       <Route path={"/ticket/create"} component={TicketCreate} />
       <Route path={"/ticket/:id"} component={TicketDetail} />

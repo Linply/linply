@@ -1,13 +1,19 @@
-import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
 import { createChatResponse, parseJsonValue } from "./chatService";
 import { createAgentChatResponse } from "./agentService";
 import { ingestDocument } from "./knowledge/ingest";
 import { ENV } from "./_core/env";
+import {
+  clearSessionCookie,
+  loginWithPassword,
+  registerWithPassword,
+  revokeRequestSession,
+  toPublicUser,
+} from "./_core/auth";
 import {
   buildKnowledgeEmbeddingInput,
   createEmbedding,
@@ -79,13 +85,57 @@ const reindexKnowledgeEntry = async (id: number) => {
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+    me: publicProcedure.query(opts =>
+      opts.ctx.user ? toPublicUser(opts.ctx.user) : null
+    ),
+    register: publicProcedure
+      .input(z.object({
+        name: z.string().trim().min(2, "姓名至少需要 2 个字符").max(80),
+        email: z.string().trim().email("请输入有效邮箱").max(320),
+        password: z.string().min(8, "密码至少需要 8 个字符").max(128),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          return await registerWithPassword(input, ctx.req, ctx.res);
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            throw new TRPCError({ code: "CONFLICT", message: "该邮箱已注册" });
+          }
+          throw error;
+        }
+      }),
+    login: publicProcedure
+      .input(z.object({
+        email: z.string().trim().email("请输入有效邮箱").max(320),
+        password: z.string().min(1).max(128),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          return await loginWithPassword(input, ctx.req, ctx.res);
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "statusCode" in error &&
+            error.statusCode === 403
+          ) {
+            throw new TRPCError({ code: "UNAUTHORIZED", message: "邮箱或密码错误" });
+          }
+          throw error;
+        }
+      }),
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      try {
+        await revokeRequestSession(ctx.req);
+      } finally {
+        clearSessionCookie(ctx.req, ctx.res);
+      }
+      return { success: true } as const;
     }),
   }),
 
@@ -405,6 +455,9 @@ export const appRouter = router({
         limit: z.number().optional().default(50),
       }))
       .query(async ({ input, ctx }) => {
+        if (input.ticketId !== undefined) {
+          await ensureTicketAccess(input.ticketId, ctx.user);
+        }
         const history = await db.getChatHistory(ctx.user.id, input.ticketId, input.limit);
         const ids = history.flatMap(message =>
           parseJsonValue<number[]>(message.relatedKnowledgeIds, [])
@@ -449,6 +502,9 @@ export const appRouter = router({
         content: z.string().min(1),
       }))
       .mutation(async ({ input, ctx }) => {
+        if (input.ticketId !== undefined) {
+          await ensureTicketAccess(input.ticketId, ctx.user);
+        }
         if (ENV.chatMode === "agent") {
           return createAgentChatResponse({
             userId: ctx.user.id,

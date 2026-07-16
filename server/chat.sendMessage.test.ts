@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({
+  getTicketById: vi.fn(),
   getRecentChatHistory: vi.fn(),
   saveChatMessage: vi.fn(),
   searchKnowledge: vi.fn(),
@@ -25,11 +26,12 @@ const mockedInvokeLLM = vi.mocked(invokeLLM);
 
 const user = {
   id: 11,
-  openId: "user-11",
   email: "user11@example.local",
   name: "User 11",
-  loginMethod: "dev",
   role: "user" as const,
+  avatarUrl: null,
+  emailVerifiedAt: null,
+  disabledAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
   lastSignedIn: new Date(),
@@ -46,6 +48,19 @@ describe("chat.sendMessage", () => {
     vi.clearAllMocks();
     ENV.chatMode = "rag";
     ENV.llmProvider = "openai";
+
+    mockedDb.getTicketById.mockResolvedValue({
+      id: 99,
+      userId: 11,
+      title: "订单物流异常",
+      description: "物流未更新",
+      status: "pending",
+      priority: "high",
+      assignedTo: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      resolvedAt: null,
+    });
 
     mockedDb.getRecentChatHistory.mockResolvedValue([
       { role: "user", content: "之前问过物流" },
@@ -129,5 +144,29 @@ describe("chat.sendMessage", () => {
       llmProvider: "openai",
       llmModel: "gpt-test",
     });
+  });
+
+  it("rejects a ticket owned by another user before reading chat data", async () => {
+    mockedDb.getTicketById.mockResolvedValueOnce({
+      id: 99,
+      userId: 12,
+      title: "其他用户工单",
+      description: "不可访问",
+      status: "pending",
+      priority: "medium",
+      assignedTo: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      resolvedAt: null,
+    });
+
+    const caller = appRouter.createCaller(createContext());
+    await expect(caller.chat.sendMessage({
+      content: "查看工单",
+      ticketId: 99,
+    })).rejects.toThrow("Unauthorized");
+
+    expect(mockedDb.getRecentChatHistory).not.toHaveBeenCalled();
+    expect(mockedDb.saveChatMessage).not.toHaveBeenCalled();
   });
 });

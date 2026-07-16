@@ -13,11 +13,12 @@ const mockedDb = vi.mocked(db);
 
 const user = {
   id: 5,
-  openId: "local-dev-user",
   email: "local-dev-user@example.local",
   name: "本地开发用户",
-  loginMethod: "dev",
   role: "user" as const,
+  avatarUrl: null,
+  emailVerifiedAt: null,
+  disabledAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
   lastSignedIn: new Date(),

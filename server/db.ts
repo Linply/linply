@@ -1,10 +1,9 @@
-import { eq, and, desc, like, inArray, isNotNull, sql } from "drizzle-orm";
+import { eq, and, desc, gt, like, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { cosineDistance } from "drizzle-orm/sql/functions/vector";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { InsertUser, users, tickets, knowledgeBase, knowledgeDocuments, chatMessages, ticketNotes, agentRuns, agentRunSteps } from "../drizzle/schema";
+import { users, authAccounts, sessions, tickets, knowledgeBase, knowledgeDocuments, chatMessages, ticketNotes, agentRuns, agentRunSteps } from "../drizzle/schema";
 import type { KnowledgeDocumentStatus } from "../shared/knowledge";
-import { ENV } from './_core/env';
 import {
   createEmbedding,
   isEmbeddingEnabled,
@@ -29,77 +28,51 @@ export async function getDb() {
   return _db;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
+export async function createPasswordUser(data: {
+  email: string;
+  name: string;
+  passwordHash: string;
+  role?: "user" | "admin";
+}) {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
+  if (!db) throw new Error("Database not available");
 
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
+  return db.transaction(async tx => {
+    const [user] = await tx.insert(users).values({
+      email: data.email,
+      name: data.name,
+      role: data.role ?? "user",
+      lastSignedIn: new Date(),
+    }).returning();
 
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
+    if (!user) throw new Error("Failed to create user");
 
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-    updateSet.updatedAt = new Date();
-
-    await db.insert(users).values(values).onConflictDoUpdate({
-      target: users.openId,
-      set: updateSet,
+    await tx.insert(authAccounts).values({
+      userId: user.id,
+      provider: "password",
+      providerAccountId: data.email,
+      passwordHash: data.passwordHash,
     });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+
+    return user;
+  });
 }
 
-export async function getUserByOpenId(openId: string) {
+export async function getPasswordAccountByEmail(email: string) {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
+  if (!db) throw new Error("Database not available");
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  const [result] = await db
+    .select({ user: users, passwordHash: authAccounts.passwordHash })
+    .from(authAccounts)
+    .innerJoin(users, eq(authAccounts.userId, users.id))
+    .where(and(
+      eq(authAccounts.provider, "password"),
+      eq(authAccounts.providerAccountId, email),
+    ))
+    .limit(1);
 
-  return result.length > 0 ? result[0] : undefined;
+  return result;
 }
 
 export async function getUserById(id: number) {
@@ -112,6 +85,87 @@ export async function getUserById(id: number) {
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return user;
+}
+
+export async function updateUserRole(id: number, role: "user" | "admin") {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [user] = await db.update(users).set({
+    role,
+    updatedAt: new Date(),
+  }).where(eq(users.id, id)).returning();
+  return user;
+}
+
+export async function createSession(data: {
+  userId: number;
+  tokenHash: string;
+  expiresAt: Date;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [session] = await db.insert(sessions).values({
+    userId: data.userId,
+    tokenHash: data.tokenHash,
+    expiresAt: data.expiresAt,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+  }).returning();
+  return session;
+}
+
+export async function getActiveSessionWithUser(tokenHash: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [result] = await db
+    .select({ session: sessions, user: users })
+    .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
+    .where(and(
+      eq(sessions.tokenHash, tokenHash),
+      isNull(sessions.revokedAt),
+      gt(sessions.expiresAt, new Date()),
+      isNull(users.disabledAt),
+    ))
+    .limit(1);
+
+  return result;
+}
+
+export async function touchSession(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, id));
+}
+
+export async function revokeSession(tokenHash: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(sessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(sessions.tokenHash, tokenHash), isNull(sessions.revokedAt)));
+}
+
+export async function updateUserLastSignedIn(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(users).set({
+    lastSignedIn: new Date(),
+    updatedAt: new Date(),
+  }).where(eq(users.id, id));
 }
 
 // ============ Tickets ============
