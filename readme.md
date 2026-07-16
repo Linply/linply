@@ -58,6 +58,7 @@ cp .env.example .env
 
 - `DATABASE_URL`：PostgreSQL 连接串。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：仅在运行管理员初始化命令时使用。
+- `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD`：可选，仅用于登录页的管理员演示入口；账号必须已通过 `pnpm auth:create-admin` 初始化并具有管理员角色。
 - `APP_BASE_URL`：应用公网 origin，用于生成 OAuth callback。
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证；缺失时入口自动隐藏。
 - `LLM_PROVIDER=openai|manus`：LLM provider。

@@ -6,6 +6,7 @@ import { ForbiddenError } from "@shared/_core/errors";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
+import { ENV } from "./env";
 
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_N = 16_384;
@@ -139,6 +140,29 @@ export async function loginWithPassword(input: {
   await db.updateUserLastSignedIn(account.user.id);
   await issueSession(account.user.id, req, res);
   return toPublicUser({ ...account.user, lastSignedIn: new Date() });
+}
+
+export const isDemoAdminConfigured = () =>
+  Boolean(ENV.demoAdminEmail && ENV.demoAdminPassword);
+
+export async function loginAsDemoAdmin(req: Request, res: Response) {
+  if (!isDemoAdminConfigured()) {
+    throw ForbiddenError("管理员演示入口未配置");
+  }
+
+  const account = await db.getPasswordAccountByEmail(normalizeEmail(ENV.demoAdminEmail));
+  if (!account || account.user.role !== "admin") {
+    throw ForbiddenError("管理员演示账号不可用");
+  }
+
+  return loginWithPassword(
+    {
+      email: ENV.demoAdminEmail,
+      password: ENV.demoAdminPassword,
+    },
+    req,
+    res
+  );
 }
 
 export async function authenticateRequest(req: Request) {

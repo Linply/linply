@@ -9,6 +9,8 @@ import { ingestDocument } from "./knowledge/ingest";
 import { ENV } from "./_core/env";
 import {
   clearSessionCookie,
+  isDemoAdminConfigured,
+  loginAsDemoAdmin,
   loginWithPassword,
   registerWithPassword,
   revokeRequestSession,
@@ -88,6 +90,7 @@ export const appRouter = router({
   auth: router({
     providers: publicProcedure.query(() => ({
       google: isGoogleOAuthConfigured(),
+      demoAdmin: isDemoAdminConfigured(),
     })),
     me: publicProcedure.query(opts =>
       opts.ctx.user ? toPublicUser(opts.ctx.user) : null
@@ -133,6 +136,24 @@ export const appRouter = router({
           throw error;
         }
       }),
+    demoAdminLogin: publicProcedure.mutation(async ({ ctx }) => {
+      try {
+        return await loginAsDemoAdmin(ctx.req, ctx.res);
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "statusCode" in error &&
+          error.statusCode === 403
+        ) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "管理员演示入口暂不可用，请改用账号密码登录",
+          });
+        }
+        throw error;
+      }
+    }),
     logout: publicProcedure.mutation(async ({ ctx }) => {
       try {
         await revokeRequestSession(ctx.req);

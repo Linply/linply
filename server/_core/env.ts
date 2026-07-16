@@ -5,6 +5,8 @@ export const ENV = {
     (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000"),
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+  demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
+  demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
   chatMode: process.env.CHAT_MODE ?? "rag",
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",
