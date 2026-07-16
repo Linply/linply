@@ -4,6 +4,8 @@
 
 - `DATABASE_URL`：生产 PostgreSQL + pgvector 连接串。上线前执行 `pnpm db:migrate`。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：只用于首次运行 `pnpm auth:create-admin`，不要提交真实值。
+- `APP_BASE_URL`：应用的 HTTPS origin，用于生成 Google OAuth callback。
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证。
 - `LLM_PROVIDER=openai`：使用 OpenAI Responses API。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容服务配置。
 - `CHAT_MODE=rag|agent`：`rag` 为直接 RAG，`agent` 为 OpenAI Agents SDK。
@@ -15,9 +17,10 @@
 1. 安装依赖并构建：`pnpm install --frozen-lockfile && pnpm build`。
 2. 准备数据库：安装 pgvector，设置 `DATABASE_URL`，执行 `pnpm db:migrate`。
 3. 配置 OpenAI 兼容模型和 embedding 服务。
-4. 回填知识库向量：`pnpm kb:embed`。
-5. 启动服务：`NODE_ENV=production pnpm start`。
-6. 用管理员账号检查知识库、RAG 调试页、智能客服和 Agent Run 详情页。
+4. 在 Google Cloud Console 配置 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
+5. 回填知识库向量：`pnpm kb:embed`。
+6. 启动服务：`NODE_ENV=production pnpm start`。
+7. 用管理员账号检查登录、知识库、RAG 调试页、智能客服和 Agent Run 详情页。
 
 ## 上线检查
 

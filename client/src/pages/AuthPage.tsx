@@ -11,7 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
-import { AlertCircle, Eye, EyeOff, Loader2, LockKeyhole, Mail, UserRound } from "lucide-react";
+import { AlertCircle, Eye, EyeOff, Loader2, LockKeyhole, LogIn, Mail, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -21,7 +21,28 @@ type AuthPageProps = {
 
 const getReturnTo = () => {
   const value = new URLSearchParams(window.location.search).get("returnTo");
-  return value?.startsWith("/") && !value.startsWith("//") ? value : "/";
+  if (!value) return "/";
+  try {
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin) return "/";
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return "/";
+  }
+};
+
+const getOAuthError = () => {
+  const code = new URLSearchParams(window.location.search).get("oauthError");
+  if (code === "oauth_denied") return "已取消 Google 登录";
+  if (code === "invalid_state") return "登录请求已失效，请重新尝试";
+  if (code === "account_link_required") return "该邮箱已注册，请先使用邮箱密码登录";
+  if (code === "oauth_failed") return "Google 登录失败，请稍后重试";
+  return null;
+};
+
+const getAuthPageUrl = (path: "/login" | "/register") => {
+  const returnTo = getReturnTo();
+  return returnTo === "/" ? path : `${path}?returnTo=${encodeURIComponent(returnTo)}`;
 };
 
 export default function AuthPage({ mode }: AuthPageProps) {
@@ -35,6 +56,10 @@ export default function AuthPage({ mode }: AuthPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const providersQuery = trpc.auth.providers.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 
   const finishAuthentication = async (authenticatedUser: NonNullable<typeof user>) => {
     utils.auth.me.setData(undefined, authenticatedUser);
@@ -55,6 +80,9 @@ export default function AuthPage({ mode }: AuthPageProps) {
 
   const pending = loginMutation.isPending || registerMutation.isPending;
   const requestError = loginMutation.error?.message ?? registerMutation.error?.message;
+  const oauthError = getOAuthError();
+  const returnTo = getReturnTo();
+  const googleOAuthUrl = `/api/auth/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -92,6 +120,29 @@ export default function AuthPage({ mode }: AuthPageProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {providersQuery.data?.google ? (
+              <>
+                <Button asChild variant="outline" className="w-full" size="lg">
+                  <a href={googleOAuthUrl}>
+                    <LogIn />
+                    使用 Google 登录
+                  </a>
+                </Button>
+                <div className="my-5 flex items-center gap-3 text-xs text-gray-500">
+                  <div className="h-px flex-1 bg-gray-200" />
+                  <span>或使用邮箱</span>
+                  <div className="h-px flex-1 bg-gray-200" />
+                </div>
+              </>
+            ) : null}
+
+            {oauthError ? (
+              <Alert variant="destructive" className="mb-5">
+                <AlertCircle />
+                <AlertDescription>{oauthError}</AlertDescription>
+              </Alert>
+            ) : null}
+
             <form className="space-y-5" onSubmit={handleSubmit}>
               {isRegister ? (
                 <div className="space-y-2">
@@ -192,7 +243,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
               <button
                 type="button"
                 className="ml-1 font-medium text-gray-950 hover:underline"
-                onClick={() => setLocation(isRegister ? "/login" : "/register")}
+                onClick={() => setLocation(getAuthPageUrl(isRegister ? "/login" : "/register"))}
               >
                 {isRegister ? "直接登录" : "立即注册"}
               </button>

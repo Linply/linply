@@ -91,7 +91,7 @@ export function toPublicUser(user: User) {
   };
 }
 
-async function issueSession(userId: number, req: Request, res: Response) {
+export async function issueSession(userId: number, req: Request, res: Response) {
   const token = randomBytes(32).toString("base64url");
   await db.createSession({
     userId,

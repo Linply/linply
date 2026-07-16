@@ -9,6 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerChatStreamRoutes } from "../chatStream";
+import { registerGoogleOAuthRoutes } from "./googleOAuth";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -40,6 +41,7 @@ async function startServer() {
   });
   registerLocalEmbeddingRoutes(app);
   registerStorageProxy(app);
+  registerGoogleOAuthRoutes(app);
   registerChatStreamRoutes(app);
   // tRPC API
   app.use(

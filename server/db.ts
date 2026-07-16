@@ -1,8 +1,8 @@
-import { eq, and, desc, gt, like, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, gt, like, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { cosineDistance } from "drizzle-orm/sql/functions/vector";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { users, authAccounts, sessions, tickets, knowledgeBase, knowledgeDocuments, chatMessages, ticketNotes, agentRuns, agentRunSteps } from "../drizzle/schema";
+import { users, authAccounts, sessions, oauthStates, tickets, knowledgeBase, knowledgeDocuments, chatMessages, ticketNotes, agentRuns, agentRunSteps } from "../drizzle/schema";
 import type { KnowledgeDocumentStatus } from "../shared/knowledge";
 import {
   createEmbedding,
@@ -166,6 +166,97 @@ export async function updateUserLastSignedIn(id: number) {
     lastSignedIn: new Date(),
     updatedAt: new Date(),
   }).where(eq(users.id, id));
+}
+
+export async function createOAuthState(data: {
+  provider: string;
+  stateHash: string;
+  codeVerifier: string;
+  returnTo: string;
+  expiresAt: Date;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.delete(oauthStates).where(lt(oauthStates.expiresAt, new Date()));
+  const [state] = await db.insert(oauthStates).values(data).returning();
+  return state;
+}
+
+export async function consumeOAuthState(provider: string, stateHash: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [state] = await db.delete(oauthStates)
+    .where(and(
+      eq(oauthStates.provider, provider),
+      eq(oauthStates.stateHash, stateHash),
+      gt(oauthStates.expiresAt, new Date()),
+    ))
+    .returning();
+  return state;
+}
+
+export async function findOrCreateOAuthUser(data: {
+  provider: string;
+  providerAccountId: string;
+  email: string;
+  name: string;
+  avatarUrl?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async tx => {
+    const [linked] = await tx
+      .select({ user: users })
+      .from(authAccounts)
+      .innerJoin(users, eq(authAccounts.userId, users.id))
+      .where(and(
+        eq(authAccounts.provider, data.provider),
+        eq(authAccounts.providerAccountId, data.providerAccountId),
+      ))
+      .limit(1);
+
+    if (linked) return linked.user;
+
+    let [user] = await tx.select().from(users)
+      .where(eq(users.email, data.email))
+      .limit(1);
+
+    if (user?.disabledAt) throw new Error("User disabled");
+    if (user && !user.emailVerifiedAt) {
+      throw Object.assign(new Error("OAuth account linking requires a verified email"), {
+        code: "OAUTH_ACCOUNT_LINK_REQUIRED",
+      });
+    }
+
+    if (!user) {
+      [user] = await tx.insert(users).values({
+        email: data.email,
+        name: data.name,
+        avatarUrl: data.avatarUrl ?? null,
+        emailVerifiedAt: new Date(),
+        lastSignedIn: new Date(),
+      }).returning();
+    } else {
+      [user] = await tx.update(users).set({
+        emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
+        avatarUrl: user.avatarUrl ?? data.avatarUrl ?? null,
+        updatedAt: new Date(),
+      }).where(eq(users.id, user.id)).returning();
+    }
+
+    if (!user) throw new Error("Failed to create OAuth user");
+
+    await tx.insert(authAccounts).values({
+      userId: user.id,
+      provider: data.provider,
+      providerAccountId: data.providerAccountId,
+    });
+
+    return user;
+  });
 }
 
 // ============ Tickets ============

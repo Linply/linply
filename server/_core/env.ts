@@ -1,5 +1,10 @@
 export const ENV = {
   databaseUrl: process.env.DATABASE_URL ?? "",
+  appBaseUrl:
+    process.env.APP_BASE_URL ??
+    (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000"),
+  googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   chatMode: process.env.CHAT_MODE ?? "rag",
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",

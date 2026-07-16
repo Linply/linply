@@ -29,7 +29,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 - **前端**：页面分为首页、工单管理、智能客服、知识库、RAG 调试、Agent Run 详情、管理仪表盘；路由用 wouter，数据用 tRPC + React Query。
 - **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth` / `system`），数据库访问集中在 `server/db.ts`。
-- **认证**：邮箱密码注册登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
+- **认证**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
 
 ---
 
@@ -41,13 +41,14 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 | 知识库 | 知识条目的存储、检索、文档批量导入、冲突检测、增删 |
 | 智能客服 Agent | RAG 检索 + LLM/Agent 生成回答，展示执行过程，保存对话并标注引用来源 |
 | Agent Run 排查 | 持久化 Agent 运行记录、步骤、失败原因、结构化结果，支持详情页查看和重试 |
-| 认证与权限 | 邮箱密码登录、数据库 Session、角色与接口权限；账号表为后续 OAuth 预留 |
+| 认证与权限 | 邮箱密码、Google OAuth、数据库 Session、角色与接口权限 |
 
 ### 数据模型（概览）
 
 - **users**：用户资料与角色（user / admin）。
-- **auth_accounts**：登录凭证账号；第一阶段使用 password provider，后续 OAuth 复用此表。
+- **auth_accounts**：登录凭证账号，支持 password 与 google provider。
 - **sessions**：可撤销登录会话，只保存 Session Token 哈希、有效期和设备摘要。
+- **oauth_states**：一次性 OAuth state 与 PKCE verifier，回调消费后立即删除。
 - **tickets**：工单，含状态（pending / in_progress / resolved / closed）与优先级（low / medium / high / urgent）。
 - **ticket_notes**：工单备注与状态变更记录。
 - **knowledge_base**：知识条目，含向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记（`conflictWith` / `conflictScore`）。
@@ -138,7 +139,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 ## 用户使用手册
 
-- **注册与登录**：用户访问 `/register` 创建邮箱账号，通过 `/login` 登录；密码使用 scrypt 哈希，浏览器只保存 HttpOnly Session Cookie。
+- **注册与登录**：用户可通过邮箱密码或 Google OAuth 登录；密码使用 scrypt 哈希，OAuth 使用 Authorization Code + PKCE，浏览器只保存 HttpOnly Cookie。
 - **创建工单**：填写标题、描述、优先级后提交，系统返回工单 ID。
 - **查看工单**：支持按状态/优先级筛选与标题搜索；详情页查看信息、流转状态、添加备注。
 - **智能客服**：在聊天页提问，AI 基于知识库回答并展示引用来源、执行过程和结构化摘要，多轮对话自动保存。
@@ -210,6 +211,11 @@ pnpm dev
 # 数据库
 DATABASE_URL=postgres://user:password@host:5432/customer_service_agent
 
+# Google OAuth；缺失时登录入口自动隐藏
+APP_BASE_URL=https://your-app.example.com
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+
 # 管理员初始化命令使用，不需要长期注入应用运行环境
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace-with-a-strong-password
@@ -247,6 +253,9 @@ OPENAI_EMBEDDING_MODEL / VOYAGE_EMBEDDING_MODEL
 Railway app 关键变量：
 
 ```bash
+APP_BASE_URL=https://app-production-35d3.up.railway.app
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 EMBEDDING_PROVIDER=local
 LOCAL_EMBEDDING_BASE_URL=http://127.0.0.1:8080
 LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
@@ -267,7 +276,7 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 - 聊天失败且错误指向 `agent_runs` 时，先执行 `pnpm db:migrate`，再重试 `/api/chat/stream`。
 - Agent 回答生成了部分文本后出现 SDK 完成态异常时，后端会尽量保存最终回答和 Run metadata；详情页 `/runs/:runId` 可查看步骤和错误。
 - OpenAI tracing 导出网络失败不会阻断聊天主流程；排查 tracing 时先看 `AGENT_TRACING_ENABLED` 和网络出口。
-- 登录异常先检查 `sessions` 是否过期或撤销、Cookie 的 Secure/SameSite 属性与反向代理 HTTPS 头。
+- 登录异常先检查 `sessions` 是否过期或撤销、Cookie 的 Secure/SameSite 属性与反向代理 HTTPS 头；Google 登录还需核对 `${APP_BASE_URL}/api/auth/oauth/google/callback` 与 Console 配置完全一致。
 - 备份：`pg_dump "$DATABASE_URL" > backup.sql`；恢复：`psql "$DATABASE_URL" < backup.sql`。
 
 ---
@@ -285,7 +294,7 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 | 向量 | BAAI/bge-small-zh-v1.5（本地，512 维）/ OpenAI / Voyage |
 | LLM | OpenAI Responses API / Manus Forge |
 | Agent | OpenAI Agents SDK |
-| 认证 | 邮箱密码 + PostgreSQL Session；OAuth 预留账号模型 |
+| 认证 | 邮箱密码 + Google OAuth + PostgreSQL Session |
 
 ### 参考
 

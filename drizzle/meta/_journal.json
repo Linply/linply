@@ -43,6 +43,13 @@
       "when": 1784176561652,
       "tag": "0005_cloudy_shockwave",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784185207828,
+      "tag": "0006_past_iron_lad",
+      "breakpoints": true
     }
   ]
 }

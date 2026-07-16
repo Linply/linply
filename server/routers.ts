@@ -14,6 +14,7 @@ import {
   revokeRequestSession,
   toPublicUser,
 } from "./_core/auth";
+import { isGoogleOAuthConfigured } from "./_core/googleOAuth";
 import {
   buildKnowledgeEmbeddingInput,
   createEmbedding,
@@ -85,6 +86,9 @@ const reindexKnowledgeEntry = async (id: number) => {
 export const appRouter = router({
   system: systemRouter,
   auth: router({
+    providers: publicProcedure.query(() => ({
+      google: isGoogleOAuthConfigured(),
+    })),
     me: publicProcedure.query(opts =>
       opts.ctx.user ? toPublicUser(opts.ctx.user) : null
     ),

@@ -10,7 +10,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 - 数据库：PostgreSQL 16 + pgvector、Drizzle ORM
 - 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
 - LLM：OpenAI Responses API / Manus Forge 兼容路径
-- 认证：邮箱密码注册登录、数据库 Session、用户与管理员权限隔离
+- 认证：邮箱密码 + Google OAuth、数据库 Session、用户与管理员权限隔离
 
 ## 核心能力
 
@@ -58,6 +58,8 @@ cp .env.example .env
 
 - `DATABASE_URL`：PostgreSQL 连接串。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：仅在运行管理员初始化命令时使用。
+- `APP_BASE_URL`：应用公网 origin，用于生成 OAuth callback。
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证；缺失时入口自动隐藏。
 - `LLM_PROVIDER=openai|manus`：LLM provider。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容模型配置。
 - `CHAT_MODE=rag|agent`：直接 RAG 或 Agent SDK 模式。
@@ -107,7 +109,7 @@ test-data/       知识库导入测试数据
 - `chat.sendMessage` 召回、回复、保存消息
 - Agent tool 入参校验、结果摘要、结构化输出兜底
 - Agent Run 状态与步骤类型
-- 密码哈希、数据库 Session 与认证登出
+- 密码哈希、Google OAuth PKCE/state、数据库 Session 与认证登出
 - 用户工单/聊天隔离、知识库解析、基础工单 smoke flow
 
 运行：
@@ -129,6 +131,9 @@ pnpm test
 Railway app 关键变量：
 
 ```bash
+APP_BASE_URL=https://app-production-35d3.up.railway.app
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 EMBEDDING_PROVIDER=local
 LOCAL_EMBEDDING_BASE_URL=http://127.0.0.1:8080
 LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
@@ -145,10 +150,11 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 
 ## 部署要点
 
-1. 设置生产环境变量，尤其是 `DATABASE_URL`、LLM 和 embedding 配置。
+1. 设置生产环境变量，尤其是 `DATABASE_URL`、`APP_BASE_URL`、LLM 和 embedding 配置。
 2. 执行 `pnpm db:migrate`。首次切换到邮箱认证的迁移会清空旧 Manus 用户和历史业务数据。
 3. 使用 `ADMIN_EMAIL`、`ADMIN_PASSWORD` 运行一次 `pnpm auth:create-admin`。
 4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
-5. 使用 `NODE_ENV=production pnpm start` 启动服务并检查登录、用户隔离与管理员页面。
+5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
+6. 使用 `NODE_ENV=production pnpm start` 启动服务并检查邮箱登录、Google 登录、用户隔离与管理员页面。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。
