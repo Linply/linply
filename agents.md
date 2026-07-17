@@ -29,7 +29,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 - **前端**：页面分为首页、工单管理、智能客服、知识库、RAG 调试、Agent Run 详情、管理仪表盘；路由用 wouter，数据用 tRPC + React Query。
 - **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth` / `system`），数据库访问集中在 `server/db.ts`。
-- **认证**：demo 本地登录区分普通用户与管理员；保留 Manus OAuth callback 作为可选兼容路径；接口级权限校验。
+- **认证**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
 
 ---
 
@@ -41,17 +41,20 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 | 知识库 | 知识条目的存储、检索、文档批量导入、冲突检测、增删 |
 | 智能客服 Agent | RAG 检索 + LLM/Agent 生成回答，展示执行过程，保存对话并标注引用来源 |
 | Agent Run 排查 | 持久化 Agent 运行记录、步骤、失败原因、结构化结果，支持详情页查看和重试 |
-| 认证与权限 | demo 本地登录、OAuth callback 兼容路径、会话管理、角色与接口权限 |
+| 认证与权限 | 邮箱密码、Google OAuth、数据库 Session、角色与接口权限 |
 
 ### 数据模型（概览）
 
-- **users**：用户与角色（user / admin）。
+- **users**：用户资料与角色（user / admin）。
+- **auth_accounts**：登录凭证账号，支持 password 与 google provider。
+- **sessions**：可撤销登录会话，只保存 Session Token 哈希、有效期和设备摘要。
+- **oauth_states**：一次性 OAuth state 与 PKCE verifier，回调消费后立即删除。
 - **tickets**：工单，含状态（pending / in_progress / resolved / closed）与优先级（low / medium / high / urgent）。
 - **ticket_notes**：工单备注与状态变更记录。
 - **knowledge_base**：知识条目，含向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记（`conflictWith` / `conflictScore`）。
 - **knowledge_documents**：上传文档，记录解析状态、索引进度（`totalChunks`）等。
 - **chat_messages**：对话记录，保存引用的知识库条目快照。
-- **agent_runs**：Agent 单次运行记录，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
+- **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
 - **agent_run_steps**：Agent 运行步骤，记录 `thinking` / `tool_call` / `tool_result` / `final` / `error`。
 
 表结构以 `drizzle/schema.ts` 为准；变更通过 `pnpm db:generate` + `pnpm db:migrate` 管理。
@@ -87,7 +90,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 - Agent Run 状态：`queued` / `planning` / `running` / `waiting_approval` / `failed` / `completed`。
 - Agent Step 类型：`thinking` / `tool_call` / `tool_result` / `final` / `error`。
-- `/runs/:runId` 为 Agent Run 详情页，管理员可从首页「Agent Run 排查」输入 Run ID 跳转。
+- `/runs/:runId` 为 Agent Run 详情页，管理员可从聊天回复底部复制 Run UUID 或直接跳转，也可从首页「Agent Run 排查」输入 UUID。
 - 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；普通用户只能查看自己的 Run，管理员可查看全部。
 - `AGENT_TRACING_ENABLED=true` 时启用 OpenAI Agents tracing；trace 不包含敏感原始数据。
 
@@ -136,7 +139,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 ## 用户使用手册
 
-- **登录**：demo 使用本地登录，普通用户访问 `/api/dev-login?role=user`，管理员访问 `/api/dev-login?role=admin`；Manus OAuth callback 仍保留为可选兼容路径。
+- **注册与登录**：用户可通过邮箱密码或 Google OAuth 登录；密码使用 scrypt 哈希，OAuth 使用 Authorization Code + PKCE，浏览器只保存 HttpOnly Cookie。
 - **创建工单**：填写标题、描述、优先级后提交，系统返回工单 ID。
 - **查看工单**：支持按状态/优先级筛选与标题搜索；详情页查看信息、流转状态、添加备注。
 - **智能客服**：在聊天页提问，AI 基于知识库回答并展示引用来源、执行过程和结构化摘要，多轮对话自动保存。
@@ -170,6 +173,7 @@ pnpm build          # 生产构建
 pnpm db:generate    # 由 schema 生成迁移
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 灌入示例数据
+pnpm auth:create-admin # 创建或提升管理员账号（需要 ADMIN_EMAIL / ADMIN_PASSWORD）
 pnpm kb:embed       # 为未生成向量的条目回填 embedding
 pnpm kb:embed:check # 检查 embedding 服务连通性
 ```
@@ -204,10 +208,18 @@ pnpm dev
 ### 环境变量（要点）
 
 ```
-# 数据库 & 认证
+# 数据库
 DATABASE_URL=postgres://user:password@host:5432/customer_service_agent
-JWT_SECRET=...                # 长随机串
-VITE_APP_ID / OAUTH_SERVER_URL / VITE_OAUTH_PORTAL_URL  # OAuth callback 可选保留
+
+# Google OAuth；缺失时登录入口自动隐藏
+APP_BASE_URL=https://your-app.example.com
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+
+# 管理员初始化命令使用，不需要长期注入应用运行环境
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=replace-with-a-strong-password
+ADMIN_NAME=系统管理员
 
 # LLM（openai 兼容 或 manus）
 LLM_PROVIDER=openai
@@ -234,13 +246,16 @@ OPENAI_EMBEDDING_MODEL / VOYAGE_EMBEDDING_MODEL
 当前 demo 部署在 Railway：
 
 - 应用：[https://app-production-35d3.up.railway.app](https://app-production-35d3.up.railway.app)
-- 登录：`/api/dev-login?role=user` 或 `/api/dev-login?role=admin`
+- 登录：`/login`；注册：`/register`
 - 数据库：Railway Postgres + pgvector
 - Embedding：app 内置 `/v1/embeddings`，运行 `Xenova/bge-small-zh-v1.5`，对外模型名 `BAAI/bge-small-zh-v1.5`，返回 512 维向量
 
 Railway app 关键变量：
 
 ```bash
+APP_BASE_URL=https://app-production-35d3.up.railway.app
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 EMBEDDING_PROVIDER=local
 LOCAL_EMBEDDING_BASE_URL=http://127.0.0.1:8080
 LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
@@ -261,7 +276,7 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 - 聊天失败且错误指向 `agent_runs` 时，先执行 `pnpm db:migrate`，再重试 `/api/chat/stream`。
 - Agent 回答生成了部分文本后出现 SDK 完成态异常时，后端会尽量保存最终回答和 Run metadata；详情页 `/runs/:runId` 可查看步骤和错误。
 - OpenAI tracing 导出网络失败不会阻断聊天主流程；排查 tracing 时先看 `AGENT_TRACING_ENABLED` 和网络出口。
-- 登录异常先检查 demo `/api/dev-login?role=user|admin`、`JWT_SECRET` 与 Cookie；启用 OAuth 时再检查 OAuth 配置。
+- 登录异常先检查 `sessions` 是否过期或撤销、Cookie 的 Secure/SameSite 属性与反向代理 HTTPS 头；Google 登录还需核对 `${APP_BASE_URL}/api/auth/oauth/google/callback` 与 Console 配置完全一致。
 - 备份：`pg_dump "$DATABASE_URL" > backup.sql`；恢复：`psql "$DATABASE_URL" < backup.sql`。
 
 ---
@@ -279,7 +294,7 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 | 向量 | BAAI/bge-small-zh-v1.5（本地，512 维）/ OpenAI / Voyage |
 | LLM | OpenAI Responses API / Manus Forge |
 | Agent | OpenAI Agents SDK |
-| 认证 | demo 本地登录；Manus OAuth callback 可选 |
+| 认证 | 邮箱密码 + Google OAuth + PostgreSQL Session |
 
 ### 参考
 

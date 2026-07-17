@@ -19,7 +19,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { getDevLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import { LayoutDashboard, LogOut, PanelLeft, Users } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
@@ -46,50 +45,14 @@ export default function DashboardLayout({
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
   });
-  const { loading, user } = useAuth();
+  const { loading, user } = useAuth({ redirectOnUnauthenticated: true });
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
-  if (loading) {
+  if (loading || !user) {
     return <DashboardLayoutSkeleton />
-  }
-
-  if (!user) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="text-2xl font-semibold tracking-tight text-center">
-              进入演示系统
-            </h1>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              请选择演示用户身份继续访问控制台。
-            </p>
-          </div>
-          <Button
-            onClick={() => {
-              window.location.href = getDevLoginUrl("user");
-            }}
-            size="lg"
-            className="w-full shadow-lg hover:shadow-xl transition-all"
-          >
-            演示用户登录
-          </Button>
-          <Button
-            onClick={() => {
-              window.location.href = getDevLoginUrl("admin");
-            }}
-            size="lg"
-            variant="outline"
-            className="w-full"
-          >
-            演示管理员登录
-          </Button>
-        </div>
-      </div>
-    );
   }
 
   return (

@@ -1,6 +1,6 @@
 {
-  "id": "f4804b75-f929-47a8-ac66-abf5025448bc",
-  "prevId": "b3c92968-b2fd-4390-9891-63fc1fe89ce6",
+  "id": "573d70c9-d565-4ead-8acf-9149d533957d",
+  "prevId": "17317a16-94ac-4ed3-b307-a88cdad388a6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -16,7 +16,7 @@
         },
         "runId": {
           "name": "runId",
-          "type": "integer",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
@@ -116,9 +116,10 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "serial",
+          "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "userId": {
           "name": "userId",
@@ -172,7 +173,7 @@
         },
         "retryOfRunId": {
           "name": "retryOfRunId",
-          "type": "integer",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -427,6 +428,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "agentRunId": {
+          "name": "agentRunId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "llmProvider": {
           "name": "llmProvider",
           "type": "varchar(32)",
@@ -468,6 +475,21 @@
           "columns": [
             {
               "expression": "ticketId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_chat_messages_agentRunId": {
+          "name": "idx_chat_messages_agentRunId",
+          "columns": [
+            {
+              "expression": "agentRunId",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -706,6 +728,87 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.oauth_states": {
+      "name": "oauth_states",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stateHash": {
+          "name": "stateHash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "codeVerifier": {
+          "name": "codeVerifier",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "returnTo": {
+          "name": "returnTo",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'/'"
+        },
+        "expiresAt": {
+          "name": "expiresAt",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_oauth_states_expiresAt": {
+          "name": "idx_oauth_states_expiresAt",
+          "columns": [
+            {
+              "expression": "expiresAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "oauth_states_stateHash_unique": {
+          "name": "oauth_states_stateHash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "stateHash"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

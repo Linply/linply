@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { ENV } from "./_core/env";
 import { streamLLM } from "./_core/llm";
-import { sdk } from "./_core/sdk";
+import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import {
   streamAgentChatResponse,
@@ -18,7 +18,7 @@ type SsePayload =
       type: "meta";
       relatedKnowledge: Array<{ id: number; title: string; category: string }>;
       llmProvider: string;
-      runId?: number;
+      runId?: string;
       structuredOutput?: StructuredAgentOutput;
     }
   | { type: "delta"; content: string }
@@ -75,7 +75,7 @@ export function registerChatStreamRoutes(app: Express) {
     });
 
     try {
-      const user = await sdk.authenticateRequest(req);
+      const user = await authenticateRequest(req);
       const content = typeof req.body?.content === "string"
         ? req.body.content.trim()
         : "";
@@ -87,6 +87,15 @@ export function registerChatStreamRoutes(app: Express) {
         res.statusCode = 400;
         writeSse(res, { type: "error", message: "消息内容不能为空" });
         return;
+      }
+
+      if (ticketId !== undefined) {
+        const ticket = await db.getTicketById(ticketId);
+        if (!ticket || (user.role !== "admin" && ticket.userId !== user.id)) {
+          res.statusCode = 403;
+          writeSse(res, { type: "error", message: "无权访问该工单" });
+          return;
+        }
       }
 
       if (ENV.chatMode === "agent") {

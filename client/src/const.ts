@@ -1,6 +1,8 @@
-export { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
-
-export const getDevLoginUrl = (role: "user" | "admin" = "user") =>
-  `/api/dev-login?role=${role}`;
-
-export const getAuthRedirectUrl = () => getDevLoginUrl("user");
+export const getAuthRedirectUrl = () => {
+  if (typeof window === "undefined") return "/login";
+  const returnTo = `${window.location.pathname}${window.location.search}`;
+  if (returnTo.startsWith("/login") || returnTo.startsWith("/register")) {
+    return "/login";
+  }
+  return `/login?returnTo=${encodeURIComponent(returnTo)}`;
+};

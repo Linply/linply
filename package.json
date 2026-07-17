@@ -15,6 +15,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit migrate",
     "db:seed": "node scripts/seed-data.mjs",
+    "auth:create-admin": "tsx scripts/create-admin.ts",
     "kb:embed": "tsx scripts/embed-knowledge.mjs",
     "kb:embed:check": "tsx scripts/check-openai-embedding.mjs"
   },
@@ -67,7 +68,6 @@
     "express": "^4.21.2",
     "framer-motion": "^12.23.22",
     "input-otp": "^1.4.2",
-    "jose": "6.1.0",
     "lucide-react": "^0.453.0",
     "nanoid": "^5.1.5",
     "next-themes": "^0.4.6",
