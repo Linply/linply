@@ -4,7 +4,8 @@ import { invokeLLM, Message } from "./_core/llm";
 
 export const CHAT_HISTORY_LIMIT = 10;
 const CHAT_HISTORY_CHAR_LIMIT = 4_000;
-const KNOWLEDGE_CONTEXT_CHAR_LIMIT = 6_000;
+export const KNOWLEDGE_CONTEXT_CHAR_LIMIT = 6_000;
+export const KNOWLEDGE_ENTRY_CHAR_LIMIT = 1_800;
 export const LLM_TIMEOUT_MS = 45_000;
 
 export const parseJsonValue = <T>(value: unknown, fallback: T): T => {
@@ -21,6 +22,32 @@ export const parseJsonValue = <T>(value: unknown, fallback: T): T => {
 const truncateText = (text: string, maxLength: number) =>
   text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 
+const KNOWLEDGE_TRUNCATION_SUFFIX = "...";
+
+/** Keep each knowledge block within its budget without cutting through a sentence when possible. */
+export function truncateAtSemanticBoundary(text: string, maxLength: number) {
+  if (maxLength <= 0) return "";
+  if (text.length <= maxLength) return text;
+  if (maxLength <= KNOWLEDGE_TRUNCATION_SUFFIX.length) {
+    return text.slice(0, maxLength);
+  }
+
+  const contentLength = maxLength - KNOWLEDGE_TRUNCATION_SUFFIX.length;
+  const candidate = text.slice(0, contentLength);
+  const minimumBoundary = Math.floor(contentLength * 0.5);
+  let boundary = -1;
+  const boundaryPattern = /\n\s*\n|\n|[。！？!?；;]/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundaryPattern.exec(candidate)) !== null) {
+    const end = match.index + match[0].length;
+    if (end >= minimumBoundary) boundary = end;
+  }
+
+  const cutAt = boundary >= 0 ? boundary : contentLength;
+  return `${text.slice(0, cutAt).trimEnd()}${KNOWLEDGE_TRUNCATION_SUFFIX}`;
+}
+
 export function buildKnowledgeContext(
   relatedKnowledge: Array<{
     title: string;
@@ -28,11 +55,25 @@ export function buildKnowledgeContext(
     category: string;
   }>
 ) {
-  const context = relatedKnowledge
-    .map(kb => `[${kb.category}] ${kb.title}: ${kb.content}`)
-    .join("\n\n");
+  const blocks: string[] = [];
+  let remaining = KNOWLEDGE_CONTEXT_CHAR_LIMIT;
 
-  return truncateText(context, KNOWLEDGE_CONTEXT_CHAR_LIMIT);
+  for (const kb of relatedKnowledge) {
+    const separator = blocks.length > 0 ? "\n\n" : "";
+    const available = remaining - separator.length;
+    if (available <= 0) break;
+
+    const block = truncateAtSemanticBoundary(
+      `[${kb.category}] ${kb.title}: ${kb.content}`,
+      Math.min(KNOWLEDGE_ENTRY_CHAR_LIMIT, available)
+    );
+    if (!block) break;
+
+    blocks.push(block);
+    remaining -= separator.length + block.length;
+  }
+
+  return blocks.join("\n\n");
 }
 
 export function buildChatHistoryMessages(

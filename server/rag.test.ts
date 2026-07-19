@@ -3,6 +3,8 @@ import {
   buildChatHistoryMessages,
   buildCustomerServiceSystemPrompt,
   buildKnowledgeContext,
+  KNOWLEDGE_CONTEXT_CHAR_LIMIT,
+  KNOWLEDGE_ENTRY_CHAR_LIMIT,
 } from "./chatService";
 import { rankKnowledgeEntriesByKeyword } from "./db";
 
@@ -62,6 +64,37 @@ describe("chat prompt helpers", () => {
 
     expect(context).toContain("[FAQ] 如何重置密码？");
     expect(context).toContain("[政策] 产品退货政策");
+  });
+
+  it("limits each knowledge entry before applying the total context budget", () => {
+    const longEntries = Array.from({ length: 5 }, (_, index) => ({
+      title: `长条目 ${index}`,
+      category: "政策",
+      content: `第 ${index} 条规则。${"这是一段较长的政策说明。".repeat(300)}`,
+    }));
+
+    const context = buildKnowledgeContext(longEntries);
+    const blocks = context.split("\n\n");
+
+    expect(context.length).toBeLessThanOrEqual(KNOWLEDGE_CONTEXT_CHAR_LIMIT);
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(blocks.every(block => block.length <= KNOWLEDGE_ENTRY_CHAR_LIMIT)).toBe(
+      true
+    );
+  });
+
+  it("truncates knowledge at a sentence boundary when the entry exceeds its budget", () => {
+    const context = buildKnowledgeContext([
+      {
+        title: "退款规则",
+        category: "政策",
+        content: `${"前置说明。".repeat(500)}后续不应进入上下文。`,
+      },
+    ]);
+
+    expect(context.length).toBeLessThanOrEqual(KNOWLEDGE_ENTRY_CHAR_LIMIT);
+    expect(context).toMatch(/。\.\.\.$/);
+    expect(context).not.toContain("后续不应进入上下文");
   });
 
   it("keeps the system prompt grounded in knowledge base answers", () => {

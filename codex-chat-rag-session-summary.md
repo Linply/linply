@@ -140,13 +140,13 @@ data: {"type":"delta","content":"..."}
 
 主要类型如下：
 
-| `type` | 作用 |
-| --- | --- |
-| `agent_event` | Agent 思考或工具调用过程，用于工具时间线 |
-| `delta` | LLM/Agent 文本增量，前端持续追加 |
-| `meta` | `relatedKnowledge`、`runId`、`structuredOutput` 等元信息 |
-| `done` | 流式回答完成 |
-| `error` | 请求或运行失败 |
+| `type`        | 作用                                                     |
+| ------------- | -------------------------------------------------------- |
+| `agent_event` | Agent 思考或工具调用过程，用于工具时间线                 |
+| `delta`       | LLM/Agent 文本增量，前端持续追加                         |
+| `meta`        | `relatedKnowledge`、`runId`、`structuredOutput` 等元信息 |
+| `done`        | 流式回答完成                                             |
+| `error`       | 请求或运行失败                                           |
 
 结构化结果和引用来源目前都放在 `meta` 中，并不是四条完全独立的传输通道。
 
@@ -176,7 +176,7 @@ data: {"type":"delta","content":"..."}
 
 ### 问题 2：知识上下文是全量拼接、重排还是截断
 
-**现状**
+**优化前**
 
 - 召回结果按当前顺序直接拼接 `category/title/content`。
 - 没有二阶段 rerank。
@@ -201,6 +201,14 @@ Top 3
 ```
 
 随后再按需要增加 rerank 或 query-focused 摘要。
+
+**优化后**
+
+- 会话记录当时的实现是：召回结果按当前顺序直接拼接 `category/title/content`，没有二阶段 rerank，并对整体内容硬截断到 6000 字符。
+- 每个知识块最多 1800 字符，保留分类和标题前缀。
+- 整个知识上下文仍受 6000 字符总预算约束，预算包含条目之间的分隔符。
+- 超出单条预算时，优先在段落、换行或中英文句末标点处截断；找不到合适边界时才硬截断。
+- 相关行为已在 `server/rag.test.ts` 覆盖单条上限、总预算和句末边界。
 
 ### 问题 3：关键词降级对上层和用户不可见
 
@@ -420,4 +428,3 @@ EventSource 可以获得自动重连和 `Last-Event-ID` 支持，但只能 GET�
 - `server/agentService.ts`：Agent Run、工具定义、权限检查、Step、结构化结果和引用提取。
 - `server/db.ts`：知识检索、聊天记录、工单、Agent Run/Step 数据访问。
 - `drizzle/schema.ts`：向量字段、HNSW 索引、工单和 Agent Run 数据模型。
-
