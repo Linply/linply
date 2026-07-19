@@ -4,6 +4,7 @@ import { streamLLM } from "./_core/llm";
 import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import type { KnowledgeRetrieval } from "./db";
+import { getTicketForUser } from "./accessControl";
 import {
   streamAgentChatResponse,
   type AgentEvent,
@@ -92,8 +93,9 @@ export function registerChatStreamRoutes(app: Express) {
       }
 
       if (ticketId !== undefined) {
-        const ticket = await db.getTicketById(ticketId);
-        if (!ticket || (user.role !== "admin" && ticket.userId !== user.id)) {
+        try {
+          await getTicketForUser(ticketId, user);
+        } catch {
           res.statusCode = 403;
           writeSse(res, { type: "error", message: "无权访问该工单" });
           return;
@@ -136,6 +138,7 @@ export function registerChatStreamRoutes(app: Express) {
       const { messages, relatedKnowledge, relatedKnowledgeSnapshot, retrieval } =
         await prepareChatResponse({
           userId: user.id,
+          userRole: user.role,
           ticketId,
           content,
         });

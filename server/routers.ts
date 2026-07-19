@@ -18,22 +18,19 @@ import {
 } from "./_core/auth";
 import { isGoogleOAuthConfigured } from "./_core/googleOAuth";
 import {
+  getAgentRunForUser,
+  getAgentRunRecordForUser,
+  getChatHistoryForUser,
+  getTicketChatHistoryForUser,
+  getTicketForUser,
+  getTicketNotesForUser,
+  listTicketsForUser,
+} from "./accessControl";
+import {
   buildKnowledgeEmbeddingInput,
   createEmbedding,
   isEmbeddingEnabled,
 } from "./_core/embeddings";
-
-const ensureTicketAccess = async (
-  ticketId: number,
-  user: { id: number; role: "user" | "admin" }
-) => {
-  const ticket = await db.getTicketById(ticketId);
-  if (!ticket) throw new Error("Ticket not found");
-  if (user.role !== "admin" && ticket.userId !== user.id) {
-    throw new Error("Unauthorized");
-  }
-  return ticket;
-};
 
 const reindexKnowledgeEntry = async (id: number) => {
   const entry = await db.getKnowledgeEntryById(id);
@@ -187,7 +184,7 @@ export const appRouter = router({
     getById: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
-        return ensureTicketAccess(input.id, ctx.user);
+        return getTicketForUser(input.id, ctx.user);
       }),
 
     // 列表工单（支持筛选和搜索）
@@ -200,14 +197,7 @@ export const appRouter = router({
         offset: z.number().optional().default(0),
       }))
       .query(async ({ input, ctx }) => {
-        // 普通用户只能看自己的工单，管理员可以看所有工单
-        const filters: any = {
-          ...input,
-        };
-        if (ctx.user.role !== "admin") {
-          filters.userId = ctx.user.id;
-        }
-        return await db.listTickets(filters);
+        return listTicketsForUser(input, ctx.user);
       }),
 
     // 更新工单
@@ -221,12 +211,7 @@ export const appRouter = router({
         assignedTo: z.number().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        // 检查权限：只有管理员或工单创建者可以更新
-        const ticket = await db.getTicketById(input.id);
-        if (!ticket) throw new Error("Ticket not found");
-        if (ctx.user.role !== "admin" && ticket.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
-        }
+        const ticket = await getTicketForUser(input.id, ctx.user);
 
         const updateData: any = {};
         if (input.title !== undefined) updateData.title = input.title;
@@ -259,8 +244,7 @@ export const appRouter = router({
     getNotes: protectedProcedure
       .input(z.object({ ticketId: z.number() }))
       .query(async ({ input, ctx }) => {
-        await ensureTicketAccess(input.ticketId, ctx.user);
-        return await db.getTicketNotes(input.ticketId);
+        return getTicketNotesForUser(input.ticketId, ctx.user);
       }),
 
     getChatHistory: protectedProcedure
@@ -269,8 +253,11 @@ export const appRouter = router({
         limit: z.number().optional().default(100),
       }))
       .query(async ({ input, ctx }) => {
-        await ensureTicketAccess(input.ticketId, ctx.user);
-        const history = await db.getTicketChatHistory(input.ticketId, input.limit);
+        const history = await getTicketChatHistoryForUser(
+          input.ticketId,
+          input.limit,
+          ctx.user
+        );
         return history.map(message => ({
           ...message,
           relatedKnowledgeIds: parseJsonValue<number[]>(
@@ -292,7 +279,7 @@ export const appRouter = router({
         content: z.string().min(1),
       }))
       .mutation(async ({ input, ctx }) => {
-        await ensureTicketAccess(input.ticketId, ctx.user);
+        await getTicketForUser(input.ticketId, ctx.user);
         await db.addTicketNote({
           ticketId: input.ticketId,
           userId: ctx.user.id,
@@ -480,10 +467,11 @@ export const appRouter = router({
         limit: z.number().optional().default(50),
       }))
       .query(async ({ input, ctx }) => {
-        if (input.ticketId !== undefined) {
-          await ensureTicketAccess(input.ticketId, ctx.user);
-        }
-        const history = await db.getChatHistory(ctx.user.id, input.ticketId, input.limit);
+        const history = await getChatHistoryForUser(
+          input.ticketId,
+          input.limit,
+          ctx.user
+        );
         const ids = history.flatMap(message =>
           parseJsonValue<number[]>(message.relatedKnowledgeIds, [])
         );
@@ -528,7 +516,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         if (input.ticketId !== undefined) {
-          await ensureTicketAccess(input.ticketId, ctx.user);
+          await getTicketForUser(input.ticketId, ctx.user);
         }
         if (ENV.chatMode === "agent") {
           return createAgentChatResponse({
@@ -541,6 +529,7 @@ export const appRouter = router({
 
         return createChatResponse({
           userId: ctx.user.id,
+          userRole: ctx.user.role,
           ticketId: input.ticketId,
           content: input.content,
         });
@@ -552,14 +541,7 @@ export const appRouter = router({
     getById: protectedProcedure
       .input(z.object({ id: z.string().uuid() }))
       .query(async ({ input, ctx }) => {
-        const run = await db.getAgentRunWithSteps(input.id);
-        if (!run) {
-          throw new Error("Agent run not found");
-        }
-        if (ctx.user.role !== "admin" && run.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
-        }
-        return run;
+        return getAgentRunForUser(input.id, ctx.user);
       }),
 
     summarizeRecentTickets: protectedProcedure
@@ -582,13 +564,7 @@ export const appRouter = router({
     retry: protectedProcedure
       .input(z.object({ id: z.string().uuid() }))
       .mutation(async ({ input, ctx }) => {
-        const existingRun = await db.getAgentRunById(input.id);
-        if (!existingRun) {
-          throw new Error("Agent run not found");
-        }
-        if (ctx.user.role !== "admin" && existingRun.userId !== ctx.user.id) {
-          throw new Error("Unauthorized");
-        }
+        const existingRun = await getAgentRunRecordForUser(input.id, ctx.user);
 
         return createAgentChatResponse({
           userId: existingRun.userId,

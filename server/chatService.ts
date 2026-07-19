@@ -1,6 +1,7 @@
 import * as db from "./db";
 import { ENV } from "./_core/env";
 import { invokeLLM, Message } from "./_core/llm";
+import { getRecentChatHistoryForUser } from "./accessControl";
 
 export const CHAT_HISTORY_LIMIT = 10;
 const CHAT_HISTORY_CHAR_LIMIT = 4_000;
@@ -145,17 +146,19 @@ export async function withTimeout<T>(
 
 export async function prepareChatResponse({
   userId,
+  userRole,
   ticketId,
   content,
 }: {
   userId: number;
+  userRole: "user" | "admin";
   ticketId?: number;
   content: string;
 }) {
-  const history = await db.getRecentChatHistory(
-    userId,
+  const history = await getRecentChatHistoryForUser(
     ticketId,
-    CHAT_HISTORY_LIMIT
+    CHAT_HISTORY_LIMIT,
+    { id: userId, role: userRole }
   );
 
   await db.saveChatMessage({
@@ -191,6 +194,7 @@ export async function prepareChatResponse({
 
 export async function createChatResponse(input: {
   userId: number;
+  userRole: "user" | "admin";
   ticketId?: number;
   content: string;
 }) {

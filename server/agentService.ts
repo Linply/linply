@@ -10,6 +10,12 @@ import {
   LLM_TIMEOUT_MS,
 } from "./chatService";
 import type { KnowledgeRetrieval } from "./db";
+import {
+  getRecentChatHistoryForUser,
+  getTicketAndNotesForUser,
+  getTicketForUser,
+  listTicketsForUser,
+} from "./accessControl";
 
 export type AgentEvent =
   | { type: "thinking"; message: string; runId?: string }
@@ -337,17 +343,6 @@ const createAgentRunner = (
     toolNotFoundBehavior: "return_error_to_model",
   });
 
-const ensureTicketAccess = async (context: AgentContext, ticketId: number) => {
-  const ticket = await db.getTicketById(ticketId);
-  if (!ticket) {
-    throw new Error("工单不存在");
-  }
-  if (context.role !== "admin" && ticket.userId !== context.userId) {
-    throw new Error("无权访问该工单");
-  }
-  return ticket;
-};
-
 const persistAgentEvent = async (runId: string, event: AgentEvent) => {
   if (event.type === "thinking") {
     await db.addAgentRunStep({
@@ -593,9 +588,9 @@ export const agentTools = [
       const context = runContext?.context as AgentContext | undefined;
       if (!context) throw new Error("缺少用户上下文");
       await emitToolCall(context, "listTickets", input);
-      const tickets = await db.listTickets({
-        ...input,
-        userId: context.role === "admin" ? undefined : context.userId,
+      const tickets = await listTicketsForUser(input, {
+        id: context.userId,
+        role: context.role,
       });
       const result = tickets.map((ticket: Awaited<ReturnType<typeof db.listTickets>>[number]) => ({
         id: ticket.id,
@@ -619,8 +614,10 @@ export const agentTools = [
       const context = runContext?.context as AgentContext | undefined;
       if (!context) throw new Error("缺少用户上下文");
       await emitToolCall(context, "getTicketById", input);
-      const ticket = await ensureTicketAccess(context, input.id);
-      const notes = await db.getTicketNotes(input.id);
+      const { ticket, notes } = await getTicketAndNotesForUser(input.id, {
+        id: context.userId,
+        role: context.role,
+      });
       const result = {
         id: ticket.id,
         title: ticket.title,
@@ -655,7 +652,10 @@ export const agentTools = [
       const context = runContext?.context as AgentContext | undefined;
       if (!context) throw new Error("缺少用户上下文");
       await emitToolCall(context, "addTicketNote", input);
-      await ensureTicketAccess(context, input.ticketId);
+      await getTicketForUser(input.ticketId, {
+        id: context.userId,
+        role: context.role,
+      });
       await db.addTicketNote({
         ticketId: input.ticketId,
         userId: context.userId,
@@ -690,13 +690,14 @@ const customerServiceAgent = new Agent<AgentContext>({
 
 const buildAgentInput = async (input: {
   userId: number;
+  userRole: "user" | "admin";
   ticketId?: number;
   content: string;
 }) => {
-  const history = await db.getRecentChatHistory(
-    input.userId,
+  const history = await getRecentChatHistoryForUser(
     input.ticketId,
-    CHAT_HISTORY_LIMIT
+    CHAT_HISTORY_LIMIT,
+    { id: input.userId, role: input.userRole }
   );
   const historyText = buildChatHistoryMessages(history)
     .map(message => `${message.role === "user" ? "用户" : "客服助手"}：${message.content}`)
@@ -757,6 +758,12 @@ export async function createAgentChatResponse(input: {
   retryOfRunId?: string;
 }) {
   requireOpenAiAgentConfig();
+  if (input.ticketId !== undefined) {
+    await getTicketForUser(input.ticketId, {
+      id: input.userId,
+      role: input.userRole,
+    });
+  }
   const guardrail = evaluateInputGuardrails(input.content);
   if (!guardrail.allowed) {
     await db.saveChatMessage({
@@ -945,6 +952,12 @@ export async function streamAgentChatResponse(
   emitDelta?: (content: string) => void | Promise<void>
 ) {
   requireOpenAiAgentConfig();
+  if (input.ticketId !== undefined) {
+    await getTicketForUser(input.ticketId, {
+      id: input.userId,
+      role: input.userRole,
+    });
+  }
   const guardrail = evaluateInputGuardrails(input.content);
   if (!guardrail.allowed) {
     await db.saveChatMessage({

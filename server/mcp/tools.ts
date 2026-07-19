@@ -3,6 +3,12 @@ import { z } from "zod";
 import * as db from "../db";
 import type { McpUserContext } from "./auth";
 import {
+  getAgentRunForUser,
+  getTicketAndNotesForUser,
+  getTicketForUser,
+  listTicketsForUser,
+} from "../accessControl";
+import {
   asTextContent,
   serializeAgentRun,
   serializeKnowledgeEntry,
@@ -11,24 +17,6 @@ import {
 } from "./serializers";
 
 const limitSchema = z.number().int().min(1).max(50).default(10);
-
-const ensureTicketAccess = async (ticketId: number, user: McpUserContext) => {
-  const ticket = await db.getTicketById(ticketId);
-  if (!ticket) throw new Error("Ticket not found");
-  if (user.role !== "admin" && ticket.userId !== user.id) {
-    throw new Error("Unauthorized");
-  }
-  return ticket;
-};
-
-const ensureAgentRunAccess = async (runId: string, user: McpUserContext) => {
-  const run = await db.getAgentRunWithSteps(runId);
-  if (!run) throw new Error("Agent run not found");
-  if (user.role !== "admin" && run.userId !== user.id) {
-    throw new Error("Unauthorized");
-  }
-  return run;
-};
 
 export function registerMcpTools(server: McpServer, user: McpUserContext) {
   server.registerTool(
@@ -72,14 +60,13 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const tickets = await db.listTickets({
+      const tickets = await listTicketsForUser({
         status: input.status,
         priority: input.priority,
         search: input.search,
         limit: input.limit,
         offset: input.offset,
-        userId: user.role === "admin" ? undefined : user.id,
-      });
+      }, user);
 
       return asTextContent({
         count: tickets.length,
@@ -102,8 +89,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const ticket = await ensureTicketAccess(input.id, user);
-      const notes = await db.getTicketNotes(input.id);
+      const { ticket, notes } = await getTicketAndNotesForUser(input.id, user);
       return asTextContent(serializeTicketDetail(ticket, notes));
     }
   );
@@ -154,7 +140,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      await ensureTicketAccess(input.ticketId, user);
+      await getTicketForUser(input.ticketId, user);
       await db.addTicketNote({
         ticketId: input.ticketId,
         userId: user.id,
@@ -183,7 +169,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const run = await ensureAgentRunAccess(input.id, user);
+      const run = await getAgentRunForUser(input.id, user);
       return asTextContent(serializeAgentRun(run));
     }
   );
