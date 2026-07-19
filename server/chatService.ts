@@ -102,11 +102,20 @@ export function buildChatHistoryMessages(
   return selected;
 }
 
-export function buildCustomerServiceSystemPrompt(knowledgeContext: string) {
+export function buildCustomerServiceSystemPrompt(
+  knowledgeContext: string,
+  retrieval?: db.KnowledgeRetrieval
+) {
+  const retrievalNotice = retrieval?.degraded
+    ? `
+
+检索状态：本次知识库检索已降级为关键词匹配（${retrieval.fallbackReason ?? "unknown"}）。请降低回答确定性；如果知识依据不足，明确说明暂时无法确认，并建议创建工单。`
+    : "";
+
   return `你是一个专业的客服助手。请严格根据提供的知识库信息回答用户问题。
 
 知识库信息：
-${knowledgeContext || "暂无相关知识库信息"}
+${knowledgeContext || "暂无相关知识库信息"}${retrievalNotice}
 
 规则：
 1. 只使用知识库中明确提供的信息，不要编造政策、承诺、联系方式或时间。
@@ -156,9 +165,11 @@ export async function prepareChatResponse({
     content,
   });
 
-  const relatedKnowledge = await db.searchKnowledge(content, 3);
+  const knowledgeSearch = await db.searchKnowledgeWithMeta(content, 3);
+  const relatedKnowledge = knowledgeSearch.entries;
+  const retrieval = knowledgeSearch.retrieval;
   const knowledgeContext = buildKnowledgeContext(relatedKnowledge);
-  const systemPrompt = buildCustomerServiceSystemPrompt(knowledgeContext);
+  const systemPrompt = buildCustomerServiceSystemPrompt(knowledgeContext, retrieval);
   const messages: Message[] = [
     { role: "system", content: systemPrompt },
     ...buildChatHistoryMessages(history),
@@ -174,6 +185,7 @@ export async function prepareChatResponse({
     messages,
     relatedKnowledge,
     relatedKnowledgeSnapshot,
+    retrieval,
   };
 }
 
@@ -182,7 +194,7 @@ export async function createChatResponse(input: {
   ticketId?: number;
   content: string;
 }) {
-  const { messages, relatedKnowledge, relatedKnowledgeSnapshot } =
+  const { messages, relatedKnowledge, relatedKnowledgeSnapshot, retrieval } =
     await prepareChatResponse(input);
 
   const response = await withTimeout(
@@ -211,6 +223,7 @@ export async function createChatResponse(input: {
     userMessage: input.content,
     assistantMessage: assistantContent,
     relatedKnowledge: relatedKnowledgeSnapshot,
+    retrieval,
     llmProvider: ENV.llmProvider,
     llmModel: response.model,
   };

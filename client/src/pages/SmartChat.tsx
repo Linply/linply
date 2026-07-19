@@ -48,6 +48,12 @@ type StructuredOutput = {
   referencedTicketIds: number[];
 };
 
+type RetrievalStatus = {
+  mode: "vector" | "keyword";
+  degraded: boolean;
+  fallbackReason?: string | null;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -57,6 +63,7 @@ type ChatMessage = {
   runId?: string;
   agentEvents?: AgentEvent[];
   structuredOutput?: StructuredOutput;
+  retrieval?: RetrievalStatus | null;
   error?: string;
   sourcePrompt?: string;
 };
@@ -268,6 +275,7 @@ export default function SmartChat() {
           updateAssistant(assistantId, message => ({
             ...message,
             relatedKnowledge: payload.relatedKnowledge ?? [],
+            retrieval: payload.retrieval ?? message.retrieval,
             runId: payload.runId ?? message.runId,
             structuredOutput: payload.structuredOutput ?? message.structuredOutput,
           }));
@@ -511,6 +519,12 @@ export default function SmartChat() {
                       {message.role === "assistant"
                         ? renderStructuredOutput(message)
                         : null}
+
+                      {message.retrieval?.degraded ? (
+                        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                          知识库检索已降级为关键词匹配，答案可能需要人工确认。
+                        </div>
+                      ) : null}
 
                       {message.relatedKnowledge &&
                       message.relatedKnowledge.length > 0 ? (

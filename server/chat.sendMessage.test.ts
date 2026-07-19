@@ -5,7 +5,7 @@ vi.mock("./db", () => ({
   getTicketById: vi.fn(),
   getRecentChatHistory: vi.fn(),
   saveChatMessage: vi.fn(),
-  searchKnowledge: vi.fn(),
+  searchKnowledgeWithMeta: vi.fn(),
 }));
 
 vi.mock("./_core/llm", async importOriginal => {
@@ -66,22 +66,29 @@ describe("chat.sendMessage", () => {
       { role: "user", content: "之前问过物流" },
       { role: "assistant", content: "可以查询发货时间" },
     ]);
-    mockedDb.searchKnowledge.mockResolvedValue([
-      {
-        id: 3,
-        title: "订单发货时间",
-        content: "订单确认后通常在1-2个工作日内发货。",
-        category: "物流",
-        keywords: "发货,快递",
-        embedding: null,
-        embeddingStatus: "completed",
-        documentId: null,
-        conflictWith: null,
-        conflictScore: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+    mockedDb.searchKnowledgeWithMeta.mockResolvedValue({
+      entries: [
+        {
+          id: 3,
+          title: "订单发货时间",
+          content: "订单确认后通常在1-2个工作日内发货。",
+          category: "物流",
+          keywords: "发货,快递",
+          embedding: null,
+          embeddingStatus: "completed",
+          documentId: null,
+          conflictWith: null,
+          conflictScore: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      retrieval: {
+        mode: "vector",
+        degraded: false,
+        fallbackReason: null,
       },
-    ]);
+    });
     mockedDb.saveChatMessage.mockResolvedValue({} as never);
     mockedInvokeLLM.mockResolvedValue({
       id: "resp_test",
@@ -108,7 +115,10 @@ describe("chat.sendMessage", () => {
       ticketId: 99,
     });
 
-    expect(mockedDb.searchKnowledge).toHaveBeenCalledWith("我的订单多久发货？", 3);
+    expect(mockedDb.searchKnowledgeWithMeta).toHaveBeenCalledWith(
+      "我的订单多久发货？",
+      3
+    );
     expect(mockedInvokeLLM).toHaveBeenCalledWith({
       messages: expect.arrayContaining([
         expect.objectContaining({
@@ -141,6 +151,11 @@ describe("chat.sendMessage", () => {
     expect(result).toMatchObject({
       assistantMessage: expect.stringContaining("1-2 个工作日"),
       relatedKnowledge: [{ id: 3, title: "订单发货时间", category: "物流" }],
+      retrieval: {
+        mode: "vector",
+        degraded: false,
+        fallbackReason: null,
+      },
       llmProvider: "openai",
       llmModel: "gpt-test",
     });

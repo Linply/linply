@@ -9,6 +9,7 @@ import {
   withTimeout,
   LLM_TIMEOUT_MS,
 } from "./chatService";
+import type { KnowledgeRetrieval } from "./db";
 
 export type AgentEvent =
   | { type: "thinking"; message: string; runId?: string }
@@ -49,6 +50,7 @@ export type AgentChatResponse = {
   llmModel: string;
   events: AgentEvent[];
   structuredOutput: StructuredAgentOutput;
+  retrieval: KnowledgeRetrieval | null;
 };
 
 const MAX_SUMMARY_LENGTH = 600;
@@ -537,8 +539,8 @@ export const agentTools = [
       `知识库检索失败：${toolError(error)}。请说明无法确认，并建议创建工单。`,
     execute: async (input, runContext) => {
       await emitToolCall(runContext?.context as AgentContext | undefined, "searchKnowledge", input);
-      const entries = await db.searchKnowledge(input.query, input.limit);
-      const result = entries.map(entry => ({
+      const search = await db.searchKnowledgeWithMeta(input.query, input.limit);
+      const result = search.entries.map(entry => ({
         id: entry.id,
         title: entry.title,
         category: entry.category,
@@ -546,13 +548,14 @@ export const agentTools = [
       }));
       await emitToolResult(runContext?.context as AgentContext | undefined, "searchKnowledge", {
         count: result.length,
+        retrieval: search.retrieval,
         entries: result.map(entry => ({
           id: entry.id,
           title: entry.title,
           category: entry.category,
         })),
       });
-      return result;
+      return { entries: result, retrieval: search.retrieval };
     },
   }),
   tool({
@@ -725,6 +728,27 @@ const extractKnowledgeSnapshotFromEvents = (events: AgentEvent[]) => {
   return Array.from(snapshotById.values());
 };
 
+const extractKnowledgeRetrievalFromEvents = (
+  events: AgentEvent[]
+): KnowledgeRetrieval | null => {
+  let retrieval: KnowledgeRetrieval | null = null;
+
+  for (const event of events) {
+    if (event.type !== "tool_result" || event.toolName !== "searchKnowledge") {
+      continue;
+    }
+    const parsed = parseJsonValue<{ retrieval?: KnowledgeRetrieval }>(
+      event.resultSummary,
+      {}
+    );
+    if (!parsed.retrieval) continue;
+    if (parsed.retrieval.degraded) return parsed.retrieval;
+    retrieval ??= parsed.retrieval;
+  }
+
+  return retrieval;
+};
+
 export async function createAgentChatResponse(input: {
   userId: number;
   userRole: "user" | "admin";
@@ -781,6 +805,7 @@ export async function createAgentChatResponse(input: {
       llmModel: ENV.openAiModel,
       events: [{ type: "final", content: guardrail.message, runId }],
       structuredOutput,
+      retrieval: null,
     };
   }
 
@@ -844,6 +869,7 @@ export async function createAgentChatResponse(input: {
     await persistAgentEvent(runId, finalEvent);
 
     const relatedKnowledgeSnapshot = extractKnowledgeSnapshotFromEvents(events);
+    const retrieval = extractKnowledgeRetrievalFromEvents(events);
     const structuredOutput = buildStructuredAgentOutput({
       userContent: input.content,
       assistantContent,
@@ -871,6 +897,7 @@ export async function createAgentChatResponse(input: {
       metadata: {
         ...getAgentRunMetadata(runId, "non_stream", {
           structuredOutput,
+          retrieval,
           handoffEvaluation,
           comparison: getAgentRagComparison(metrics),
           metrics,
@@ -887,6 +914,7 @@ export async function createAgentChatResponse(input: {
       llmModel: ENV.openAiModel,
       events,
       structuredOutput,
+      retrieval,
     };
   } catch (error) {
     const message = toolError(error);
@@ -968,6 +996,7 @@ export async function streamAgentChatResponse(
       assistantContent: guardrail.message,
       relatedKnowledgeSnapshot: [],
       structuredOutput,
+      retrieval: null,
     };
   }
 
@@ -1065,6 +1094,7 @@ export async function streamAgentChatResponse(
     await emit(finalEvent);
 
     const relatedKnowledgeSnapshot = extractKnowledgeSnapshotFromEvents(events);
+    const retrieval = extractKnowledgeRetrievalFromEvents(events);
     const structuredOutput = buildStructuredAgentOutput({
       userContent: input.content,
       assistantContent,
@@ -1092,6 +1122,7 @@ export async function streamAgentChatResponse(
       metadata: {
         ...getAgentRunMetadata(runId, "stream", {
           structuredOutput,
+          retrieval,
           handoffEvaluation,
           comparison: getAgentRagComparison(metrics),
           metrics,
@@ -1104,6 +1135,7 @@ export async function streamAgentChatResponse(
       assistantContent,
       relatedKnowledgeSnapshot,
       structuredOutput,
+      retrieval,
     };
   } catch (error) {
     const message = toolError(error);

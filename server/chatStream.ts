@@ -3,6 +3,7 @@ import { ENV } from "./_core/env";
 import { streamLLM } from "./_core/llm";
 import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
+import type { KnowledgeRetrieval } from "./db";
 import {
   streamAgentChatResponse,
   type AgentEvent,
@@ -17,6 +18,7 @@ type SsePayload =
   | {
       type: "meta";
       relatedKnowledge: Array<{ id: number; title: string; category: string }>;
+      retrieval: KnowledgeRetrieval | null;
       llmProvider: string;
       runId?: string;
       structuredOutput?: StructuredAgentOutput;
@@ -118,6 +120,7 @@ export function registerChatStreamRoutes(app: Express) {
         writeSse(res, {
           type: "meta",
           relatedKnowledge: result.relatedKnowledgeSnapshot,
+          retrieval: result.retrieval ?? null,
           llmProvider: "openai-agents",
           runId: result.runId,
           structuredOutput: result.structuredOutput,
@@ -130,7 +133,7 @@ export function registerChatStreamRoutes(app: Express) {
         return;
       }
 
-      const { messages, relatedKnowledge, relatedKnowledgeSnapshot } =
+      const { messages, relatedKnowledge, relatedKnowledgeSnapshot, retrieval } =
         await prepareChatResponse({
           userId: user.id,
           ticketId,
@@ -140,6 +143,7 @@ export function registerChatStreamRoutes(app: Express) {
       writeSse(res, {
         type: "meta",
         relatedKnowledge: relatedKnowledgeSnapshot,
+        retrieval,
         llmProvider: ENV.llmProvider,
       });
 

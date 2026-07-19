@@ -816,12 +816,49 @@ export function scoreKnowledgeEntriesByKeyword<T extends KeywordSearchEntry>(
     .slice(0, limit);
 }
 
-export async function searchKnowledge(query: string, limit = 5) {
+export type KnowledgeRetrievalMode = "vector" | "keyword";
+export type KnowledgeFallbackReason =
+  | "embedding_disabled"
+  | "vector_error"
+  | "no_vector_results";
+
+export type KnowledgeRetrieval = {
+  mode: KnowledgeRetrievalMode;
+  degraded: boolean;
+  fallbackReason: KnowledgeFallbackReason | null;
+};
+
+export type KnowledgeSearchResult = {
+  entries: Array<typeof knowledgeBase.$inferSelect>;
+  retrieval: KnowledgeRetrieval;
+};
+
+const vectorRetrieval = (): KnowledgeRetrieval => ({
+  mode: "vector",
+  degraded: false,
+  fallbackReason: null,
+});
+
+const keywordRetrieval = (
+  fallbackReason: KnowledgeFallbackReason
+): KnowledgeRetrieval => ({
+  mode: "keyword",
+  degraded: true,
+  fallbackReason,
+});
+
+export async function searchKnowledgeWithMeta(
+  query: string,
+  limit = 5
+): Promise<KnowledgeSearchResult> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   if (!isEmbeddingEnabled()) {
-    return fallbackSearchKnowledge(query, limit);
+    return {
+      entries: await fallbackSearchKnowledge(query, limit),
+      retrieval: keywordRetrieval("embedding_disabled"),
+    };
   }
 
   try {
@@ -834,13 +871,29 @@ export async function searchKnowledge(query: string, limit = 5) {
       .orderBy(distance, desc(knowledgeBase.updatedAt))
       .limit(limit);
 
-    return scored.length > 0 ? scored : fallbackSearchKnowledge(query, limit);
+    if (scored.length > 0) {
+      return { entries: scored, retrieval: vectorRetrieval() };
+    }
+
+    return {
+      entries: await fallbackSearchKnowledge(query, limit),
+      retrieval: keywordRetrieval("no_vector_results"),
+    };
   } catch (error) {
     logWarn("[RAG] Vector search failed, falling back to keyword search", {
       error,
     });
-    return fallbackSearchKnowledge(query, limit);
+    return {
+      entries: await fallbackSearchKnowledge(query, limit),
+      retrieval: keywordRetrieval("vector_error"),
+    };
   }
+}
+
+/** Legacy array-only API for non-chat consumers such as MCP. */
+export async function searchKnowledge(query: string, limit = 5) {
+  const result = await searchKnowledgeWithMeta(query, limit);
+  return result.entries;
 }
 
 export async function debugSearchKnowledge(query: string, limit = 5) {

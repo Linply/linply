@@ -212,7 +212,7 @@ Top 3
 
 ### 问题 3：关键词降级对上层和用户不可见
 
-**现状**
+**优化前**
 
 `db.searchKnowledge` 只返回知识条目数组。向量检索失败时只有服务端日志，上层 `chatService`、Agent 和前端都不知道当前使用了关键词降级结果。
 
@@ -248,6 +248,15 @@ type KnowledgeSearchResult = {
 - 向开发者：在日志、Agent Run 和 telemetry 中保留完整 `fallbackReason`。
 
 关键点是不能只在 UI 提示，模型和 Agent 也必须感知降级态。
+
+**优化后**
+
+- 新增 `db.searchKnowledgeWithMeta`，在返回知识条目的同时返回 `mode`、`degraded` 和稳定的 `fallbackReason`。
+- 向量检索正常时返回 `vector`；Embedding 禁用、没有向量结果或向量检索异常时分别返回 `embedding_disabled`、`no_vector_results` 或 `vector_error`。
+- 直接 RAG 将降级状态加入 system prompt，要求模型降低回答确定性，并在依据不足时建议转人工。
+- Agent 的 `searchKnowledge` 工具结果和 Agent Run metadata 都保存检索状态，工具时间线可以识别降级检索。
+- SSE `meta` 携带检索状态，聊天页展示“已降级为关键词匹配，答案可能需要人工确认”的提示。
+- 保留 `searchKnowledge` 的数组返回兼容接口，避免 MCP 等非聊天调用受到不必要影响。
 
 ### 问题 4：模型幻觉出无权访问的工单 ID
 

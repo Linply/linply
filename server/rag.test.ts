@@ -105,6 +105,18 @@ describe("chat prompt helpers", () => {
     expect(prompt).toContain("参考：知识库标题");
   });
 
+  it("tells the model when retrieval has degraded to keyword matching", () => {
+    const prompt = buildCustomerServiceSystemPrompt("关键词命中的内容", {
+      mode: "keyword",
+      degraded: true,
+      fallbackReason: "vector_error",
+    });
+
+    expect(prompt).toContain("降级为关键词匹配");
+    expect(prompt).toContain("降低回答确定性");
+    expect(prompt).toContain("vector_error");
+  });
+
   it("limits multi-turn history before sending it to the model", () => {
     const history = Array.from({ length: 12 }, (_, index) => ({
       role: index % 2 === 0 ? "user" as const : "assistant" as const,
