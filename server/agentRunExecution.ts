@@ -1,0 +1,180 @@
+import type { AgentRun } from "../drizzle/schema";
+import { ENV } from "./_core/env";
+import { LLM_TIMEOUT_MS } from "./chatService";
+import * as db from "./db";
+import { streamAgentChatResponse } from "./agentService";
+
+export const getPublicAgentErrorMessage = (error: unknown) => {
+  const message =
+    error instanceof Error ? error.message : "发送消息失败，请稍后重试";
+
+  if (
+    /^Failed query:/i.test(message) ||
+    /insert into "agent_run/i.test(message) ||
+    /relation "agent_run/i.test(message)
+  ) {
+    return "Agent 运行记录写入失败，请确认数据库迁移已执行后重试。";
+  }
+
+  return message;
+};
+
+export const appendAgentStreamEvent = async (
+  runId: string,
+  eventType: db.AgentRunEventType,
+  payload: Record<string, unknown>
+) => {
+  try {
+    return await db.appendAgentRunEvent({ runId, eventType, payload });
+  } catch (error) {
+    console.error("[Agent] Failed to persist stream event", {
+      runId,
+      eventType,
+      error,
+    });
+    return null;
+  }
+};
+
+export async function enqueueAgentRun(input: {
+  userId: number;
+  ticketId?: number;
+  content: string;
+  retryOfRunId?: string;
+}) {
+  const run = await db.createAgentRun({
+    userId: input.userId,
+    ticketId: input.ticketId,
+    input: input.content,
+    status: "queued",
+    llmProvider: "openai-agents",
+    llmModel: ENV.openAiModel,
+    retryOfRunId: input.retryOfRunId,
+    metadata: {
+      mode: "stream",
+      executionMode: ENV.agentExecutionMode,
+    },
+  });
+
+  await appendAgentStreamEvent(run.id, "meta", {
+    relatedKnowledge: [],
+    retrieval: null,
+    llmProvider: "openai-agents",
+    runId: run.id,
+  });
+  if (ENV.agentExecutionMode === "inline") {
+    void executeAgentRun(run).catch(error => {
+      console.error("[Agent] Inline execution failed", { runId: run.id, error });
+    });
+  }
+  return run;
+}
+
+export async function executeAgentRun(
+  run: AgentRun,
+  worker?: { workerId: string; leaseMs: number }
+) {
+  const user = await db.getUserById(run.userId);
+  if (!user) throw new Error("Agent Run user not found");
+
+  if (run.attemptCount > 1) {
+    await appendAgentStreamEvent(run.id, "reset", {
+      reason: "worker_retry",
+      attemptCount: run.attemptCount,
+    });
+  }
+
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), LLM_TIMEOUT_MS);
+  const heartbeatId = worker
+    ? setInterval(() => {
+        void db.renewAgentRunLease({
+          runId: run.id,
+          workerId: worker.workerId,
+          leaseMs: worker.leaseMs,
+        }).then(renewed => {
+          if (!renewed) abortController.abort();
+        }).catch(error => {
+          console.error("[Agent Worker] Failed to renew lease", {
+            runId: run.id,
+            error,
+          });
+        });
+      }, Math.max(1_000, Math.floor(worker.leaseMs / 3)))
+    : undefined;
+
+  try {
+    const result = await streamAgentChatResponse(
+      {
+        runId: run.id,
+        userId: run.userId,
+        userRole: user.role,
+        ticketId: run.ticketId ?? undefined,
+        content: run.input,
+        retryOfRunId: run.retryOfRunId ?? undefined,
+        executionFence: worker ? {
+          workerId: worker.workerId,
+          attemptCount: run.attemptCount,
+        } : undefined,
+      },
+      abortController.signal,
+      async event => {
+        await appendAgentStreamEvent(run.id, "agent_event", {
+          event,
+          attemptCount: run.attemptCount,
+        });
+      },
+      async content => {
+        await appendAgentStreamEvent(run.id, "delta", {
+          content,
+          attemptCount: run.attemptCount,
+        });
+      }
+    );
+
+    await appendAgentStreamEvent(run.id, "meta", {
+      relatedKnowledge: result.relatedKnowledgeSnapshot,
+      retrieval: result.retrieval ?? null,
+      llmProvider: "openai-agents",
+      runId: result.runId,
+      structuredOutput: result.structuredOutput,
+      attemptCount: run.attemptCount,
+    });
+    await appendAgentStreamEvent(run.id, "done", {
+      llmProvider: "openai-agents",
+      llmModel: ENV.openAiModel,
+      attemptCount: run.attemptCount,
+    });
+  } catch (error) {
+    const message = getPublicAgentErrorMessage(
+      abortController.signal.aborted
+        ? new Error("LLM call timed out，请稍后重试")
+        : error
+    );
+    await db.updateAgentRun(run.id, {
+      status: "failed",
+      error: message,
+      completedAt: new Date(),
+    }, worker ? {
+      workerId: worker.workerId,
+      attemptCount: run.attemptCount,
+    } : undefined).catch(updateError => {
+      console.error("[Agent] Failed to mark run failed", updateError);
+    });
+    await appendAgentStreamEvent(run.id, "error", {
+      message,
+      attemptCount: run.attemptCount,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+    if (heartbeatId) clearInterval(heartbeatId);
+    if (worker) {
+      await db.clearAgentRunLease(run.id, worker.workerId).catch(error => {
+        console.error("[Agent Worker] Failed to clear lease", {
+          runId: run.id,
+          error,
+        });
+      });
+    }
+  }
+}

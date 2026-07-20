@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "NODE_ENV=development tsx watch server/_core/index.ts",
     "mcp": "tsx server/mcp/index.ts",
-    "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
+    "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.js && esbuild server/agentWorker.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/agentWorker.js",
     "start": "NODE_ENV=production node dist/index.js",
+    "worker": "NODE_ENV=production node dist/agentWorker.js",
+    "worker:dev": "NODE_ENV=development tsx watch server/agentWorker.ts",
+    "railway:start": "NODE_ENV=production node server/railwayStart.mjs",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",

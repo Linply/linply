@@ -57,6 +57,20 @@
       "when": 1784206028687,
       "tag": "0007_slow_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784462202179,
+      "tag": "0008_warm_praxagora",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784463749875,
+      "tag": "0009_friendly_deathstrike",
+      "breakpoints": true
     }
   ]
 }

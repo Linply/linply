@@ -5,6 +5,7 @@ import { z } from "zod";
 import * as db from "./db";
 import { createChatResponse, parseJsonValue } from "./chatService";
 import { createAgentChatResponse } from "./agentService";
+import { enqueueAgentRun } from "./agentRunExecution";
 import { ingestDocument } from "./knowledge/ingest";
 import { ENV } from "./_core/env";
 import {
@@ -566,13 +567,13 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const existingRun = await getAgentRunRecordForUser(input.id, ctx.user);
 
-        return createAgentChatResponse({
+        const run = await enqueueAgentRun({
           userId: existingRun.userId,
-          userRole: existingRun.userId === ctx.user.id ? ctx.user.role : "user",
           ticketId: existingRun.ticketId ?? undefined,
           content: existingRun.input,
           retryOfRunId: existingRun.id,
         });
+        return { runId: run.id };
       }),
   }),
 });

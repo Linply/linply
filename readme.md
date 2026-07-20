@@ -70,6 +70,8 @@ cp .env.example .env
 - `LOCAL_EMBEDDING_API_KEY`：可选；设置后 `/v1/embeddings` 需要 Bearer token。
 - `RAG_EMBEDDINGS_ENABLED=true|false`：关闭后使用关键词检索兜底。
 - `AGENT_TRACING_ENABLED=false`：开启 OpenAI Agents tracing 时仍不包含敏感原始数据。
+- `AGENT_EXECUTION_MODE=inline|worker`：本地默认 `inline`；Railway Web 服务使用 `worker`，只负责创建 queued Run。
+- `AGENT_WORKER_POLL_MS` / `AGENT_WORKER_LEASE_MS` / `AGENT_WORKER_MAX_ATTEMPTS`：独立 worker 的轮询、租约和最大尝试次数。
 
 完整说明见 `.env.example` 和 [上线准备说明](references/deployment-readiness.md)。
 
@@ -81,6 +83,8 @@ pnpm check          # TypeScript 类型检查
 pnpm test           # 运行 Vitest 测试
 pnpm build          # 生产构建
 pnpm start          # 启动生产构建
+pnpm worker         # 启动生产 Agent worker
+pnpm worker:dev     # 本地开发 Agent worker
 pnpm db:generate    # 根据 schema 生成迁移
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 初始化示例数据
@@ -143,7 +147,21 @@ LOCAL_EMBEDDING_PATH=/v1/embeddings
 RAG_EMBEDDINGS_ENABLED=true
 RAILPACK_NODE_VERSION=20
 TRANSFORMERS_CACHE=/tmp/transformers-cache
+AGENT_EXECUTION_MODE=worker
 ```
+
+Agent 模式使用独立 Railway Service：
+
+```text
+Service: agent-worker
+Shared config: /railway.json
+Start command: pnpm railway:start（按 RAILWAY_SERVICE_NAME 选择 Web 或 worker）
+DATABASE_URL: ${{Postgres.DATABASE_URL}}
+LOCAL_EMBEDDING_BASE_URL: ${{app.APP_BASE_URL}}
+```
+
+worker 还需与 app 使用相同的 `OPENAI_*`、`CHAT_MODE=agent` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
+worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，但不配置公网域名。
 
 `LOCAL_EMBEDDING_API_KEY` 在 Railway 中已设置为服务内 token。公网直接访问 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。
 
@@ -156,6 +174,7 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 3. 使用 `ADMIN_EMAIL`、`ADMIN_PASSWORD` 运行一次 `pnpm auth:create-admin`。
 4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
 5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-6. 使用 `NODE_ENV=production pnpm start` 启动服务并检查邮箱登录、Google 登录、用户隔离与管理员页面。
+6. Agent 模式下创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
+7. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查邮箱登录、Google 登录、用户隔离、管理员页面和 Agent Run 租约恢复。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。

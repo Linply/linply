@@ -313,6 +313,9 @@ export const chatMessages = pgTable(
     userIdIdx: index("idx_userId_chat").on(table.userId),
     ticketIdIdx: index("idx_ticketId_chat").on(table.ticketId),
     agentRunIdIdx: index("idx_chat_messages_agentRunId").on(table.agentRunId),
+    agentRunRoleUnique: uniqueIndex("idx_chat_messages_agentRunId_role_unique")
+      .on(table.agentRunId, table.role)
+      .where(sql`${table.agentRunId} IS NOT NULL`),
   })
 );
 
@@ -336,6 +339,10 @@ export const agentRuns = pgTable(
     llmProvider: varchar("llmProvider", { length: 32 }),
     llmModel: varchar("llmModel", { length: 128 }),
     retryOfRunId: uuid("retryOfRunId"),
+    attemptCount: integer("attemptCount").default(0).notNull(),
+    leaseOwner: varchar("leaseOwner", { length: 128 }),
+    leaseExpiresAt: timestamp("leaseExpiresAt", { withTimezone: true }),
+    heartbeatAt: timestamp("heartbeatAt", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
@@ -349,6 +356,10 @@ export const agentRuns = pgTable(
     userIdIdx: index("idx_agent_runs_userId").on(table.userId),
     ticketIdIdx: index("idx_agent_runs_ticketId").on(table.ticketId),
     statusIdx: index("idx_agent_runs_status").on(table.status),
+    statusLeaseIdx: index("idx_agent_runs_status_lease").on(
+      table.status,
+      table.leaseExpiresAt
+    ),
     retryOfRunIdIdx: index("idx_agent_runs_retryOfRunId").on(
       table.retryOfRunId
     ),
@@ -386,3 +397,50 @@ export const agentRunSteps = pgTable(
 
 export type AgentRunStep = typeof agentRunSteps.$inferSelect;
 export type InsertAgentRunStep = typeof agentRunSteps.$inferInsert;
+
+/** Persisted stream events used to replay an Agent Run after a client disconnects. */
+export const agentRunEvents = pgTable(
+  "agent_run_events",
+  {
+    id: serial("id").primaryKey(),
+    runId: uuid("runId").notNull(),
+    eventType: varchar("eventType", { length: 32 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    runIdIdx: index("idx_agent_run_events_runId").on(table.runId),
+    runIdIdIdx: index("idx_agent_run_events_runId_id").on(table.runId, table.id),
+  })
+);
+
+export type AgentRunEvent = typeof agentRunEvents.$inferSelect;
+export type InsertAgentRunEvent = typeof agentRunEvents.$inferInsert;
+
+/** Committed side effects keyed across an Agent Run retry chain. */
+export const agentToolEffects = pgTable(
+  "agent_tool_effects",
+  {
+    id: serial("id").primaryKey(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull(),
+    rootRunId: uuid("rootRunId").notNull(),
+    runId: uuid("runId").notNull(),
+    toolName: varchar("toolName", { length: 128 }).notNull(),
+    argsHash: varchar("argsHash", { length: 64 }).notNull(),
+    result: jsonb("result").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("idx_agent_tool_effects_idempotencyKey")
+      .on(table.idempotencyKey),
+    rootRunIdIdx: index("idx_agent_tool_effects_rootRunId").on(table.rootRunId),
+    runIdIdx: index("idx_agent_tool_effects_runId").on(table.runId),
+  })
+);
+
+export type AgentToolEffect = typeof agentToolEffects.$inferSelect;
+export type InsertAgentToolEffect = typeof agentToolEffects.$inferInsert;

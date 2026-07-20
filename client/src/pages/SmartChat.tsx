@@ -237,22 +237,31 @@ export default function SmartChat() {
     ]);
 
     try {
-      const response = await fetch("/api/chat/stream", {
+      const startResponse = await fetch("/api/chat/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: userMessage }),
       });
-
-      if (!response.ok || !response.body) {
-        throw new Error("发送消息失败，请稍后重试");
+      const startPayload = await startResponse.json().catch(() => ({}));
+      if (!startResponse.ok) {
+        throw new Error(startPayload.error || "发送消息失败，请稍后重试");
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      let runId: string | undefined = startPayload.runId ?? undefined;
+      let lastEventId = 0;
       let receivedContent = false;
+      let receivedDone = false;
+      let terminalError = false;
+      let currentAttempt = 0;
 
       const handleEvent = (event: string) => {
+        const eventId = event
+          .split("\n")
+          .find(line => line.startsWith("id:"))
+          ?.slice(3)
+          .trim();
+        if (eventId && /^\d+$/.test(eventId)) lastEventId = Number(eventId);
+
         const data = event
           .split("\n")
           .filter(line => line.startsWith("data:"))
@@ -261,6 +270,29 @@ export default function SmartChat() {
 
         if (!data) return;
         const payload = JSON.parse(data);
+
+        const eventAttempt = typeof payload.attemptCount === "number"
+          ? payload.attemptCount
+          : currentAttempt;
+        if (eventAttempt < currentAttempt) return;
+        currentAttempt = Math.max(currentAttempt, eventAttempt);
+
+        if (payload.type === "reset") {
+          receivedContent = false;
+          receivedDone = false;
+          terminalError = false;
+          updateAssistant(assistantId, message => ({
+            ...message,
+            content: "",
+            relatedKnowledge: [],
+            retrieval: null,
+            agentEvents: [],
+            structuredOutput: undefined,
+            error: undefined,
+            isStreaming: true,
+          }));
+          return;
+        }
 
         if (payload.type === "agent_event") {
           updateAssistant(assistantId, message => ({
@@ -272,6 +304,7 @@ export default function SmartChat() {
         }
 
         if (payload.type === "meta") {
+          runId = payload.runId ?? runId;
           updateAssistant(assistantId, message => ({
             ...message,
             relatedKnowledge: payload.relatedKnowledge ?? [],
@@ -293,6 +326,7 @@ export default function SmartChat() {
         }
 
         if (payload.type === "done") {
+          receivedDone = true;
           updateAssistant(assistantId, message => ({
             ...message,
             isStreaming: false,
@@ -301,6 +335,7 @@ export default function SmartChat() {
         }
 
         if (payload.type === "error") {
+          terminalError = true;
           if (receivedContent) {
             updateAssistant(assistantId, message => ({
               ...message,
@@ -313,17 +348,59 @@ export default function SmartChat() {
         }
       };
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      const readStream = async (response: Response) => {
+        if (!response.ok || !response.body) {
+          throw new Error("发送消息失败，请稍后重试");
+        }
 
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        events.forEach(handleEvent);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split("\n\n");
+          buffer = events.pop() ?? "";
+          events.forEach(handleEvent);
+        }
+        if (buffer.trim()) handleEvent(buffer);
+      };
+
+      const streamUrl = () => runId
+        ? `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`
+        : "/api/chat/stream";
+      const initialResponse = startPayload.mode === "agent" && runId
+        ? await fetch(streamUrl())
+        : await fetch("/api/chat/stream", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ content: userMessage }),
+          });
+
+      let connectionError: unknown;
+      try {
+        await readStream(initialResponse);
+      } catch (error) {
+        connectionError = error;
       }
 
-      if (buffer.trim()) handleEvent(buffer);
+      for (let attempt = 0; runId && !receivedDone && !terminalError && attempt < 5; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+        try {
+          await readStream(await fetch(streamUrl()));
+        } catch (error) {
+          connectionError = error;
+        }
+      }
+
+      if (runId && !receivedDone && !terminalError) {
+        throw connectionError instanceof Error
+          ? connectionError
+          : new Error("连接中断，暂时无法续接 Agent Run，请稍后重试");
+      }
+      if (terminalError && connectionError && !receivedContent) throw connectionError;
       if (!receivedContent) throw new Error("未收到 AI 回复，请稍后重试");
 
       updateAssistant(assistantId, message => ({

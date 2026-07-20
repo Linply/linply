@@ -1,4 +1,5 @@
 import { Agent, OpenAIProvider, Runner, tool } from "@openai/agents";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ENV } from "./_core/env";
 import * as db from "./db";
@@ -35,10 +36,58 @@ export type AgentEvent =
 
 type AgentContext = {
   runId?: string;
+  rootRunId?: string;
+  executionFence?: db.AgentRunExecutionFence;
   userId: number;
   role: "user" | "admin";
   ticketId?: number;
   emit?: (event: AgentEvent) => void | Promise<void>;
+};
+
+const stableJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableJsonValue(item)])
+    );
+  }
+  return value;
+};
+
+export const buildToolEffectIdentity = (
+  rootRunId: string,
+  runId: string,
+  toolName: string,
+  args: unknown,
+  scope?: string
+) => {
+  const argsHash = createHash("sha256")
+    .update(JSON.stringify(stableJsonValue(args)))
+    .digest("hex");
+  return {
+    rootRunId,
+    runId,
+    argsHash,
+    idempotencyKey: `${rootRunId}:${toolName}:${scope ?? argsHash}`,
+  };
+};
+
+const getToolEffectIdentity = (
+  context: AgentContext,
+  toolName: string,
+  args: unknown,
+  scope?: string
+) => {
+  if (!context.runId) throw new Error("缺少 Agent Run 上下文");
+  return buildToolEffectIdentity(
+    context.rootRunId ?? context.runId,
+    context.runId,
+    toolName,
+    args,
+    scope
+  );
 };
 
 type RelatedKnowledgeSnapshot = Array<{
@@ -563,18 +612,27 @@ export const agentTools = [
       const context = runContext?.context as AgentContext | undefined;
       if (!context) throw new Error("缺少用户上下文");
       await emitToolCall(context, "createTicket", input);
-      const ticket = await db.createTicket({
+      const ticket = await db.createTicketIdempotent({
+        ...getToolEffectIdentity(context, "createTicket", input, "single"),
+        executionFence: context.executionFence,
         userId: context.userId,
         title: input.title,
         description: input.description,
         priority: input.priority,
       });
-      const summary = { success: true, ticketId: ticket.id };
+      const summary = {
+        success: true,
+        ticketId: ticket.ticketId,
+        idempotentReplay: ticket.replayed,
+      };
       await emitToolResult(context, "createTicket", summary);
       return {
         success: true,
-        ticketId: ticket.id,
-        message: "工单已创建。请告知用户后续会由人工客服跟进。",
+        ticketId: ticket.ticketId,
+        idempotentReplay: ticket.replayed,
+        message: ticket.replayed
+          ? "工单已经在之前的执行中创建，本次复用原工单。"
+          : "工单已创建。请告知用户后续会由人工客服跟进。",
       };
     },
   }),
@@ -656,13 +714,25 @@ export const agentTools = [
         id: context.userId,
         role: context.role,
       });
-      await db.addTicketNote({
+      const note = await db.addTicketNoteIdempotent({
+        ...getToolEffectIdentity(
+          context,
+          "addTicketNote",
+          input,
+          `ticket:${input.ticketId}`
+        ),
+        executionFence: context.executionFence,
         ticketId: input.ticketId,
         userId: context.userId,
         content: input.content,
         noteType: "comment",
       });
-      const result = { success: true, ticketId: input.ticketId };
+      const result = {
+        success: true,
+        ticketId: input.ticketId,
+        noteId: note.noteId,
+        idempotentReplay: note.replayed,
+      };
       await emitToolResult(context, "addTicketNote", result);
       return result;
     },
@@ -756,6 +826,7 @@ export async function createAgentChatResponse(input: {
   ticketId?: number;
   content: string;
   retryOfRunId?: string;
+  runId?: string;
 }) {
   requireOpenAiAgentConfig();
   if (input.ticketId !== undefined) {
@@ -771,8 +842,9 @@ export async function createAgentChatResponse(input: {
       userId: input.userId,
       role: "user",
       content: input.content,
+      agentRunId: input.runId,
     });
-    const runId = await createBlockedGuardrailRun({
+    const runId = input.runId ?? await createBlockedGuardrailRun({
       userId: input.userId,
       ticketId: input.ticketId,
       content: input.content,
@@ -780,6 +852,20 @@ export async function createAgentChatResponse(input: {
       message: guardrail.message,
       mode: "non_stream",
     });
+    if (input.runId) {
+      await db.addAgentRunStep({
+        runId,
+        stepType: "error",
+        error: guardrail.message,
+        metadata: { guardrail: "sensitive_information" },
+      });
+      await db.updateAgentRun(runId, {
+        status: "failed",
+        error: guardrail.message,
+        completedAt: new Date(),
+        metadata: { mode: "non_stream", guardrail: "sensitive_information" },
+      });
+    }
     const structuredOutput = buildStructuredAgentOutput({
       userContent: input.content,
       assistantContent: guardrail.message,
@@ -822,7 +908,7 @@ export async function createAgentChatResponse(input: {
     events.push(event);
   };
   const agentInput = await buildAgentInput(input);
-  const runRecord = await db.createAgentRun({
+  const runId = input.runId ?? (await db.createAgentRun({
     userId: input.userId,
     ticketId: input.ticketId,
     input: input.content,
@@ -831,14 +917,15 @@ export async function createAgentChatResponse(input: {
     llmModel: ENV.openAiModel,
     retryOfRunId: input.retryOfRunId,
     metadata: { mode: "non_stream" },
-  });
-  const runId = runRecord.id;
+  })).id;
+  const rootRunId = await db.getAgentRunRootId(runId);
 
   await db.saveChatMessage({
     ticketId: input.ticketId,
     userId: input.userId,
     role: "user",
     content: input.content,
+    agentRunId: runId,
   });
 
   try {
@@ -856,6 +943,7 @@ export async function createAgentChatResponse(input: {
       createAgentRunner(runId, "non_stream", input).run(customerServiceAgent, agentInput, {
         context: {
           runId,
+          rootRunId,
           userId: input.userId,
           role: input.userRole,
           ticketId: input.ticketId,
@@ -946,6 +1034,8 @@ export async function streamAgentChatResponse(
     ticketId?: number;
     content: string;
     retryOfRunId?: string;
+    runId?: string;
+    executionFence?: db.AgentRunExecutionFence;
   },
   signal: AbortSignal,
   emit: (event: AgentEvent) => void | Promise<void>,
@@ -965,8 +1055,9 @@ export async function streamAgentChatResponse(
       userId: input.userId,
       role: "user",
       content: input.content,
+      agentRunId: input.runId,
     });
-    const runId = await createBlockedGuardrailRun({
+    const runId = input.runId ?? await createBlockedGuardrailRun({
       userId: input.userId,
       ticketId: input.ticketId,
       content: input.content,
@@ -974,6 +1065,20 @@ export async function streamAgentChatResponse(
       message: guardrail.message,
       mode: "stream",
     });
+    if (input.runId) {
+      await db.addAgentRunStep({
+        runId,
+        stepType: "error",
+        error: guardrail.message,
+        metadata: { guardrail: "sensitive_information" },
+      });
+      await db.updateAgentRun(runId, {
+        status: "failed",
+        error: guardrail.message,
+        completedAt: new Date(),
+        metadata: { mode: "stream", guardrail: "sensitive_information" },
+      });
+    }
     const finalEvent: AgentEvent = {
       type: "final",
       content: guardrail.message,
@@ -1020,7 +1125,7 @@ export async function streamAgentChatResponse(
     await emit(event);
   };
   const agentInput = await buildAgentInput(input);
-  const runRecord = await db.createAgentRun({
+  const runId = input.runId ?? (await db.createAgentRun({
     userId: input.userId,
     ticketId: input.ticketId,
     input: input.content,
@@ -1029,18 +1134,26 @@ export async function streamAgentChatResponse(
     llmModel: ENV.openAiModel,
     retryOfRunId: input.retryOfRunId,
     metadata: { mode: "stream" },
-  });
-  const runId = runRecord.id;
+  })).id;
+  const rootRunId = await db.getAgentRunRootId(runId);
 
   await db.saveChatMessage({
     ticketId: input.ticketId,
     userId: input.userId,
     role: "user",
     content: input.content,
+    agentRunId: runId,
   });
 
   try {
-    await db.updateAgentRun(runId, { status: "planning" });
+    const planningUpdate = await db.updateAgentRun(
+      runId,
+      { status: "planning" },
+      input.executionFence
+    );
+    if (input.executionFence && planningUpdate.length === 0) {
+      throw new Error("Agent Run lease is no longer owned by this worker");
+    }
     const thinkingEvent: AgentEvent = {
       type: "thinking",
       message: "Agent 正在分析问题",
@@ -1049,14 +1162,23 @@ export async function streamAgentChatResponse(
     events.push(thinkingEvent);
     await persistAgentEvent(runId, thinkingEvent);
     await emit(thinkingEvent);
-    await db.updateAgentRun(runId, { status: "running" });
+    const runningUpdate = await db.updateAgentRun(
+      runId,
+      { status: "running" },
+      input.executionFence
+    );
+    if (input.executionFence && runningUpdate.length === 0) {
+      throw new Error("Agent Run lease is no longer owned by this worker");
+    }
 
     const result = await createAgentRunner(runId, "stream", input).run(customerServiceAgent, agentInput, {
       context: {
         runId,
+        rootRunId,
         userId: input.userId,
         role: input.userRole,
         ticketId: input.ticketId,
+        executionFence: input.executionFence,
         emit: capture,
       },
       maxTurns: 6,
@@ -1115,33 +1237,51 @@ export async function streamAgentChatResponse(
     });
     const handoffEvaluation = evaluateAgentHandoff(structuredOutput);
     const metrics = getRunMetrics(startedAt, events);
-    await db.saveChatMessage({
-      ticketId: input.ticketId,
-      userId: input.userId,
-      role: "assistant",
-      content: assistantContent,
-      agentRunId: runId,
-      relatedKnowledgeIds: relatedKnowledgeSnapshot.map(kb => kb.id),
-      relatedKnowledgeSnapshot,
-      llmProvider: "openai-agents",
-      llmModel: ENV.openAiModel,
+    const metadata = getAgentRunMetadata(runId, "stream", {
+      structuredOutput,
+      retrieval,
+      handoffEvaluation,
+      comparison: getAgentRagComparison(metrics),
+      metrics,
     });
-    await db.updateAgentRun(runId, {
-      status: "completed",
-      finalOutput: assistantContent,
-      llmProvider: "openai-agents",
-      llmModel: ENV.openAiModel,
-      completedAt: new Date(),
-      metadata: {
-        ...getAgentRunMetadata(runId, "stream", {
-          structuredOutput,
-          retrieval,
-          handoffEvaluation,
-          comparison: getAgentRagComparison(metrics),
-          metrics,
-        }),
-      },
-    });
+
+    if (input.executionFence) {
+      const completed = await db.completeAgentRunWithMessage({
+        runId,
+        executionFence: input.executionFence,
+        ticketId: input.ticketId,
+        userId: input.userId,
+        content: assistantContent,
+        relatedKnowledgeIds: relatedKnowledgeSnapshot.map(kb => kb.id),
+        relatedKnowledgeSnapshot,
+        llmProvider: "openai-agents",
+        llmModel: ENV.openAiModel,
+        metadata,
+      });
+      if (!completed) {
+        throw new Error("Agent Run lease is no longer owned by this worker");
+      }
+    } else {
+      await db.saveChatMessage({
+        ticketId: input.ticketId,
+        userId: input.userId,
+        role: "assistant",
+        content: assistantContent,
+        agentRunId: runId,
+        relatedKnowledgeIds: relatedKnowledgeSnapshot.map(kb => kb.id),
+        relatedKnowledgeSnapshot,
+        llmProvider: "openai-agents",
+        llmModel: ENV.openAiModel,
+      });
+      await db.updateAgentRun(runId, {
+        status: "completed",
+        finalOutput: assistantContent,
+        llmProvider: "openai-agents",
+        llmModel: ENV.openAiModel,
+        completedAt: new Date(),
+        metadata,
+      });
+    }
 
     return {
       runId,
@@ -1161,7 +1301,7 @@ export async function streamAgentChatResponse(
       status: "failed",
       error: message,
       completedAt: new Date(),
-    });
+    }, input.executionFence);
     throw error;
   }
 }

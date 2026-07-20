@@ -277,7 +277,7 @@ type KnowledgeSearchResult = {
 
 ### 问题 5：SSE 中途断线不能续传
 
-**现状**
+**优化前**
 
 - 已收到的 `delta` 保留在当前页面内存中。
 - 前端报错后停止 streaming，并提供重试按钮。
@@ -315,6 +315,28 @@ agent_run_events
 
 如果还需要在 worker 崩溃或机器重启后恢复，则必须增加 checkpoint，持久化已完成步骤、工具结果、模型上下文、当前输出和下一步状态，或使用 Temporal、LangGraph checkpoint 等 durable workflow 能力。
 
+**优化后（第一阶段：进程内后台执行）**
+
+- 新增 `agent_run_events` 事件表，持久化 `agent_event`、`delta`、`meta`、`done` 和 `error`，使用单调递增事件 ID 作为 `afterSeq` 游标。
+- 新增 `POST /api/chat/start`：创建 Agent Run、写入初始元事件，并启动与 HTTP 请求解耦的后台执行。
+- 新增 `GET /api/chat/stream/:runId?afterSeq=<id>`：校验 Run 访问权限，补发游标之后的历史事件，再轮询订阅新事件。
+- 保留 `POST /api/chat/stream` 兼容接口；Agent 模式下内部改为创建 Run 后订阅事件，客户端断开不会再 abort 后台 Agent。
+- 聊天页先获取 `runId`，再订阅 GET SSE；读取事件 ID，连接中断时按 `afterSeq` 最多重连 5 次，避免重复追加已经收到的文本。
+- `chat_messages` 仍保存完成后的 assistant 快照，事件表保存流式过程，二者职责分离。
+- 当前后台执行使用同一 Node 进程的 detached task，可以覆盖网络断线；进程重启后的自动恢复仍需要选择 BullMQ、Temporal 或独立 Railway worker 等外部执行方案。
+
+**优化后（第二阶段：Railway worker + PostgreSQL）**
+
+- Web 服务在 `AGENT_EXECUTION_MODE=worker` 时只创建 `queued` Run，不再执行 Agent。
+- 独立 `agentWorker.ts` 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 原子领取 Run，并通过 `leaseOwner`、`leaseExpiresAt`、`heartbeatAt` 续租。
+- worker 异常退出后，租约过期的 `planning/running` Run 会被其他 worker 重新领取；超过 `AGENT_WORKER_MAX_ATTEMPTS` 后标记失败。
+- 重领 Run 会发送 `reset` 事件，前端清除上一尝试的半截文本，再接收新一轮事件。
+- 同一 Run 的用户/assistant 消息通过 `(agentRunId, role)` 唯一索引去重。
+- 每次领取生成 `workerId + attemptCount` fencing token；副作用事务、最终回答快照和 Run 完成状态都必须校验当前租约，旧 worker 在租约交接后不能继续提交数据。
+- SSE 事件携带 `attemptCount`，前端在 `reset` 后忽略旧尝试迟到的事件，避免旧输出污染新一轮回答。
+- worker 的 embedding 请求使用 app 的 HTTPS `/v1/embeddings` 和同一 Bearer token；Railway 的运行时 `PORT` 不能通过 `${{app.PORT}}` 跨服务解析，不能把 worker 配成不带端口的私网地址。
+- Railway worker 使用同一仓库和构建产物，启动命令为 `pnpm worker`；Web 和 worker 共享 Railway PostgreSQL。
+
 ### 问题 6：多个工具中一个失败时是否整体回滚
 
 **现状**
@@ -330,7 +352,7 @@ agent_run_events
 
 ### 问题 7：当前重试是整次 Run 重跑，可能重复副作用
 
-**现状**
+**优化前**
 
 - 聊天页重试会重新发送原问题。
 - Run 详情页重试会创建新 Run，并用 `retryOfRunId` 关联旧 Run。
@@ -359,6 +381,15 @@ agent_run_events
 ```
 
 同一个幂等键再次执行时，应直接返回之前的结果。单 Run 内可使用 `runId + toolCallId`；要支持跨重试 Run 去重，则使用 `rootRunId + toolName + normalizedArgsHash` 一类更稳定的键。
+
+**优化后**
+
+- 新增 `agent_tool_effects`，以唯一 `idempotencyKey` 保存已经提交的副作用结果和原始参数哈希。
+- 幂等记录与工单/备注写入放在同一个 PostgreSQL 事务中；进程在事务中途退出时整体回滚，不会留下“副作用成功但幂等记录丢失”的窗口。
+- `createTicket` 使用 `retryRootRunId + createTicket + single`，同一重试链最多创建一个工单，即使模型重试时改写标题或描述也复用原工单。
+- `addTicketNote` 使用 `retryRootRunId + addTicketNote + ticketId`，同一重试链对同一工单最多写一条备注。
+- 工具命中已有副作用时返回原 `ticketId/noteId`，并在工具结果中标记 `idempotentReplay=true`。
+- Run 详情页“重试”改为创建新的 queued Run，由 Railway worker 执行，不再在 Web 请求中同步重跑。
 
 ### 问题 8：缺少单工具重试、Step Resume 和 Partial Replay
 

@@ -5,6 +5,7 @@ import {
   AgentToolInputSchemas,
   StructuredAgentOutputSchema,
   buildStructuredAgentOutput,
+  buildToolEffectIdentity,
   evaluateInputGuardrails,
   evaluateAgentHandoff,
   getAgentRagComparison,
@@ -114,6 +115,46 @@ describe("agent guardrails and structured output", () => {
 });
 
 describe("agent tool validation and summaries", () => {
+  it("builds stable side-effect keys across retry argument variations", () => {
+    const rootRunId = "11111111-1111-4111-8111-111111111111";
+    const first = buildToolEffectIdentity(
+      rootRunId,
+      rootRunId,
+      "createTicket",
+      { title: "物流异常", priority: "high" },
+      "single"
+    );
+    const retry = buildToolEffectIdentity(
+      rootRunId,
+      "22222222-2222-4222-8222-222222222222",
+      "createTicket",
+      { priority: "high", title: "物流持续异常" },
+      "single"
+    );
+
+    expect(retry.idempotencyKey).toBe(first.idempotencyKey);
+    expect(retry.argsHash).not.toBe(first.argsHash);
+  });
+
+  it("normalizes object key order when hashing tool arguments", () => {
+    const rootRunId = "11111111-1111-4111-8111-111111111111";
+    const left = buildToolEffectIdentity(
+      rootRunId,
+      rootRunId,
+      "addTicketNote",
+      { ticketId: 9, content: "跟进" }
+    );
+    const right = buildToolEffectIdentity(
+      rootRunId,
+      rootRunId,
+      "addTicketNote",
+      { content: "跟进", ticketId: 9 }
+    );
+
+    expect(right.argsHash).toBe(left.argsHash);
+    expect(right.idempotencyKey).toBe(left.idempotencyKey);
+  });
+
   it("validates tool inputs and applies defaults", () => {
     expect(
       AgentToolInputSchemas.searchKnowledge.parse({ query: "退货政策" })
