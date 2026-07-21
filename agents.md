@@ -24,11 +24,13 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
    │
    ├── PostgreSQL + pgvector   数据 & 向量存储
    ├── Embedding 服务          本地 bge-small-zh-v1.5 / OpenAI / Voyage
+   ├── Agent Worker            queued Run 的独立执行进程
    └── LLM API                 OpenAI 兼容 / Manus Forge
 ```
 
 - **前端**：页面分为首页、工单管理、智能客服、知识库、RAG 调试、Agent Run 详情、管理仪表盘；路由用 wouter，数据用 tRPC + React Query。
 - **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth` / `system`），数据库访问集中在 `server/db.ts`。
+- **Agent 执行**：Web 进程负责创建 queued Run 和订阅 SSE；`AGENT_EXECUTION_MODE=inline` 时由应用进程执行，设为 `worker` 时由独立 Worker 通过 PostgreSQL 租约领取并执行。
 - **认证**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
 
 ---
@@ -56,6 +58,9 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - **chat_messages**：对话记录，保存引用的知识库条目快照。
 - **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
 - **agent_run_steps**：Agent 运行步骤，记录 `thinking` / `tool_call` / `tool_result` / `final` / `error`。
+- **agent_run_events**：持久化 SSE 事件及递增事件 ID，用于客户端断线后的 Partial Replay。
+- **agent_tool_invocations**：记录工具调用状态、参数摘要、重试次数和可复用结果。
+- **agent_tool_effects**：记录跨重试链的幂等副作用结果，当前用于避免重复创建工单或备注。
 
 表结构以 `drizzle/schema.ts` 为准；变更通过 `pnpm db:generate` + `pnpm db:migrate` 管理。
 
@@ -68,13 +73,14 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - `CHAT_MODE=rag`：直接 RAG 流程，用户提问 → 检索知识库 → 组织 prompt 调用 LLM → 返回回答并保存引用来源。
 - `CHAT_MODE=agent`：服务端 OpenAI Agents SDK 流程，用户提问 → 创建 Agent Run → Agent 调用工具 → SSE 推送执行事件和文本增量 → 保存最终回答、结构化结果和步骤。
 
-聊天页优先使用 `/api/chat/stream`，以 SSE 返回 `agent_event`、`delta`、`meta`、`done` 或 `error`。非流式 tRPC `chat.sendMessage` 仍保留，用于兼容和测试。
+Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/chat/stream/:runId` 订阅事件；直接 RAG 仍使用 `POST /api/chat/stream`。SSE 以 JSON `type` 区分 `agent_event`、`delta`、`meta`、`done`、`error` 和重试时的 `reset`，Agent 事件同时带有 SSE `id`，客户端通过 `afterSeq` 续接。非流式 tRPC `chat.sendMessage` 仍保留，用于兼容和测试。
 
 **检索策略（RAG）**
 
 - 默认本地 `BAAI/bge-small-zh-v1.5` 生成 512 维查询向量，PostgreSQL pgvector 按余弦距离 + HNSW 索引召回。
 - Railway demo 使用 app 内置 `/v1/embeddings` endpoint，运行 `Xenova/bge-small-zh-v1.5`；本地也可用 compose 中的独立 TEI embeddings 服务。
 - 嵌入服务不可用或条目未生成向量时，自动回退到关键词检索，保证可用性。
+- `searchKnowledgeWithMeta` 会返回 `mode`、`degraded` 和 `fallbackReason`；降级原因包括 `embedding_disabled`、`no_vector_results` 和 `vector_error`。状态会传给 prompt、Agent 工具结果、SSE `meta`、Agent Run metadata 和聊天记录。
 - 默认返回相关度最高的若干条，作为回答依据并展示给用户。
 
 **Agent 工具**
@@ -93,6 +99,13 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - `/runs/:runId` 为 Agent Run 详情页，管理员可从聊天回复底部复制 Run UUID 或直接跳转，也可从首页「Agent Run 排查」输入 UUID。
 - 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；普通用户只能查看自己的 Run，管理员可查看全部。
 - `AGENT_TRACING_ENABLED=true` 时启用 OpenAI Agents tracing；trace 不包含敏感原始数据。
+
+**断线恢复与重试**
+
+- Agent 流事件写入 `agent_run_events` 后再向客户端发送；客户端记录最后一个事件 ID，连接中断时按 `afterSeq` 拉取遗漏事件，最多自动续接 5 次。
+- Worker 使用 `leaseOwner`、`leaseExpiresAt`、`heartbeatAt` 和 `attemptCount` 防止多个 Worker 同时执行同一 Run；租约失效后，未完成的工具调用会标记为 `unknown` 并按最大尝试次数恢复或失败。
+- 重试链通过 `retryOfRunId` 关联。成功的工具结果可作为 replay context 复用，`createTicket` 和 `addTicketNote` 使用跨重试链的幂等键，避免重复产生业务副作用。
+- Worker 重试会发送 `reset` 事件，前端清理上一轮未完成的展示内容，并忽略旧 attempt 的迟到事件。
 
 **结构化结果与转人工**
 
@@ -143,6 +156,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - **创建工单**：填写标题、描述、优先级后提交，系统返回工单 ID。
 - **查看工单**：支持按状态/优先级筛选与标题搜索；详情页查看信息、流转状态、添加备注。
 - **智能客服**：在聊天页提问，AI 基于知识库回答并展示引用来源、执行过程和结构化摘要，多轮对话自动保存。
+- **连接恢复**：Agent 回复过程中网络短暂中断时，聊天页会自动按 Run ID 续接已持久化事件；若知识库检索降级为关键词匹配，页面会提示答案需要人工确认。
 - **转为工单**：在 AI 回复上点击“转为工单”，系统会预填简短标题和对话摘要，用户确认后创建工单。
 - **Agent Run 排查**：管理员可在首页输入 Run ID 跳转 `/runs/:runId`，查看 Agent 执行步骤和失败原因。
 - **管理员**：仪表盘查看工单统计与分布；知识库页维护条目与导入文档；RAG 调试页检查召回效果。
@@ -157,7 +171,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 ```
 client/          前端（pages 页面、components 组件、lib 工具）
-server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、db.ts 数据访问、knowledge/ 文档解析与导入、_core/ 框架）
+server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、agentRunExecution.ts 执行编排、agentWorker.ts Worker、accessControl.ts 权限边界、db.ts 数据访问、knowledge/ 文档解析与导入、_core/ 框架）
 drizzle/         schema.ts 表定义 + 迁移文件
 scripts/         seed-data、embed-knowledge 等工具脚本
 compose.yaml     postgres + embeddings 本地服务；Railway demo 使用 app 内置 embedding endpoint
@@ -170,6 +184,8 @@ pnpm dev            # 开发（前后端一体，默认 http://localhost:3000）
 pnpm check          # TypeScript 类型检查
 pnpm test           # 运行测试（vitest）
 pnpm build          # 生产构建
+pnpm worker         # 启动生产 Agent Worker
+pnpm worker:dev     # 本地开发 Agent Worker
 pnpm db:generate    # 由 schema 生成迁移
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 灌入示例数据
@@ -185,7 +201,7 @@ pnpm kb:embed:check # 检查 embedding 服务连通性
 - **加页面**：在 `client/src/pages/` 建组件，用 `trpc.*.useQuery/useMutation` 取数，在 `App.tsx` 注册路由。
 - **加 Agent 工具**：在 `server/agentService.ts` 定义 tool、入参 schema、权限校验、脱敏摘要和事件持久化。
 - **加流式能力**：在 `server/chatStream.ts` 扩展 SSE payload，并同步更新聊天页事件处理。
-- **改 Agent Run schema**：修改 `agent_runs` 或 `agent_run_steps` 后必须执行 `pnpm db:generate` 与 `pnpm db:migrate`。
+- **改 Agent Run schema**：修改 `agent_runs`、`agent_run_steps`、`agent_run_events`、`agent_tool_invocations` 或 `agent_tool_effects` 后必须执行 `pnpm db:generate` 与 `pnpm db:migrate`。
 
 ---
 
@@ -227,6 +243,10 @@ OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
 CHAT_MODE=rag                  # rag 或 agent
 AGENT_TRACING_ENABLED=false
 AGENT_HANDOFFS_ENABLED=false
+AGENT_EXECUTION_MODE=inline    # inline 或 worker；生产 Web + Worker 使用 worker
+AGENT_WORKER_POLL_MS=500
+AGENT_WORKER_LEASE_MS=60000
+AGENT_WORKER_MAX_ATTEMPTS=3
 
 # Embedding（local / openai / voyage）
 EMBEDDING_PROVIDER=local
@@ -264,7 +284,10 @@ LOCAL_EMBEDDING_PATH=/v1/embeddings
 RAG_EMBEDDINGS_ENABLED=true
 RAILPACK_NODE_VERSION=20
 TRANSFORMERS_CACHE=/tmp/transformers-cache
+AGENT_EXECUTION_MODE=worker
 ```
+
+Agent 模式的 Railway 部署需要单独创建 `agent-worker` Service。Web Service 只负责入队和 SSE 订阅，Worker 使用相同的数据库、LLM、聊天模式和 embedding 配置，通过 PostgreSQL 租约领取 queued Run；Worker 在 Railway `PORT` 上提供内部 `/api/health` 探针，不需要公网域名。
 
 `LOCAL_EMBEDDING_API_KEY` 在 Railway 中作为服务内 token 设置。公网未授权请求 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。
 
@@ -274,6 +297,9 @@ TRANSFORMERS_CACHE=/tmp/transformers-cache
 
 - 服务问题先看后端日志与 `.manus-logs/`；嵌入相关用 `pnpm kb:embed:check`，本地独立 TEI 服务可看 `docker logs customer_service_agent_embeddings`，Railway demo 主要看 app 日志。
 - 聊天失败且错误指向 `agent_runs` 时，先执行 `pnpm db:migrate`，再重试 `/api/chat/stream`。
+- Agent 连接中断时先确认 `agent_run_events` 已完成迁移；随后可按 Run ID 刷新 `/runs/:runId`，检查事件、attempt、租约和最终状态。
+- Worker 反复重试或出现租约错误时，检查 `AGENT_WORKER_LEASE_MS`、数据库时钟、Worker 日志和 `agent_runs.leaseExpiresAt`；不要通过重复发送消息来恢复连接。
+- 如果聊天显示关键词降级，使用 `pnpm kb:embed:check` 检查 embedding 服务，并确认 `RAG_EMBEDDINGS_ENABLED`、`LOCAL_EMBEDDING_API_KEY` 与服务端配置一致。
 - Agent 回答生成了部分文本后出现 SDK 完成态异常时，后端会尽量保存最终回答和 Run metadata；详情页 `/runs/:runId` 可查看步骤和错误。
 - OpenAI tracing 导出网络失败不会阻断聊天主流程；排查 tracing 时先看 `AGENT_TRACING_ENABLED` 和网络出口。
 - 登录异常先检查 `sessions` 是否过期或撤销、Cookie 的 Secure/SameSite 属性与反向代理 HTTPS 头；Google 登录还需核对 `${APP_BASE_URL}/api/auth/oauth/google/callback` 与 Console 配置完全一致。
