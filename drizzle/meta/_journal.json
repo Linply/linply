@@ -71,6 +71,13 @@
       "when": 1784463749875,
       "tag": "0009_friendly_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784557189547,
+      "tag": "0010_legal_earthquake",
+      "breakpoints": true
     }
   ]
 }

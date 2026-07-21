@@ -350,6 +350,19 @@ agent_run_events
 
 当前语义是“尽量使用部分结果继续”，不是“全局失败回滚”。对查询型工具可以安全重试；对有副作用的工具，需要幂等或补偿机制，不能假定 Run 失败会撤销副作用。
 
+**优化后（当前实现）**
+
+- 每个 Agent 工具都配置了 `errorFunction`。工具执行、参数解析或权限检查失败时，优先转换为模型可见的错误字符串，不直接抛出到 Runner；同一次 Run 中此前成功的工具结果仍可被模型继续使用，后续工具也可以继续调用。
+- 流式回答在已经产生部分文本后，如果文本流或 SDK completion 报错，会保留已收到的文本并继续生成 `final` 事件、结构化结果和完成快照；没有产生任何文本时才按外层异常处理。
+- `createTicket` 和 `addTicketNote` 的单次副作用使用数据库事务：幂等记录与实际工单/备注写入要么一起提交，要么一起回滚。Run 失败不会触发跨工具的全局回滚。
+- `agent_run_events` 持久化 `agent_event`、`delta`、`meta`、`done` 和 `error`，因此部分工具结果与文本不会因 SSE 连接断开而丢失；它们也不会被自动撤销。
+- Worker 模式通过租约和 fencing token 防止旧 Worker 在租约交接后继续提交副作用；重试时依靠 `agent_tool_effects` 复用已提交的副作用结果，避免重复创建工单或备注。
+
+**验证与边界**
+
+- 自动化测试覆盖“`searchKnowledge` 失败后返回模型可见错误结果，随后 `listTickets` 仍能执行”的路径（`server/agentRun.test.ts`）。
+- 这仍不是失败点恢复：超时、Abort、模型调用失败、Runner 外层异常或最终持久化失败仍会把 Run 标记为 `failed`；系统目前不会从失败 Step 自动重建上下文并继续生成答案。
+
 ### 问题 7：当前重试是整次 Run 重跑，可能重复副作用
 
 **优化前**
@@ -419,6 +432,23 @@ seq
 - step resume：把已完成步骤和重试成功的工具结果重新注入 Agent 上下文，从失败点之后继续。
 
 如果 SDK 不支持精确恢复，可以先采用应用层 replay：新建一个关联旧 Run 的恢复 Run，把已完成结果写入上下文，并由幂等执行器阻止重复副作用。更复杂的场景再升级为可 checkpoint 的工作流引擎。
+
+**优化后（第一阶段：应用层 Partial Replay）**
+
+- 新增 `agent_tool_invocations`，结构化保存 `rootRunId`、`runId`、`toolCallId`、完整参数/结果、`argsHash`、`idempotencyKey`、状态、错误类型、重试次数和 replay 来源。
+- 五个 Agent 工具统一经过调用追踪器：执行前记录 `running`，成功记录 `succeeded`，失败记录 `failed/unknown`，复用历史结果记录 `skipped`。
+- 工具错误分为 `transient`、`validation`、`permission`、`not_found`、`lease_lost` 和 `unknown`，为后续按类型决定自动重试、停止或转人工提供依据。
+- 重试 Run 根据 `rootRunId + toolName + argsHash` 查找历史成功调用；命中后直接返回完整历史结果，不再执行底层查询或副作用，并在工具时间线标记 `partialReplay=true`。
+- 创建重试 Run 或 Worker 重领同一个 Run 时，会把同一重试链中的成功工具结果按上下文预算注入 Agent 输入，提示模型优先复用成功结果，只重新处理尚未成功的步骤。
+- Worker 租约过期并重领 Run 时，会把上一 attempt 中遗留的 `running` 工具调用标记为 `unknown/lease_lost`，避免出现永久运行中的假状态。
+- `createTicket` 和 `addTicketNote` 继续使用 `agent_tool_effects` 的事务幂等保护；即使副作用提交后工具调用状态写入失败，下一次执行也会复用原工单或备注。
+- 新增测试覆盖错误分类、恢复上下文预算，以及命中历史成功调用后跳过真实工具执行。
+
+**剩余边界**
+
+- 当前是新建关联 Run 的应用层 replay，不是 OpenAI Agents SDK 内部状态的精确 checkpoint；模型会收到历史成功结果，但不能恢复隐藏推理状态或从模型 token 级断点继续。
+- Worker 租约过期后，同一个 Run 的下一次 attempt 仍会重新启动 Runner，并注入已经成功持久化的工具结果，但尚未保存的模型规划仍需重新生成。
+- 还没有独立的“只执行指定失败 Step”管理接口，也没有对 `unknown` 副作用提供人工确认/对账页面；这些属于下一阶段。
 
 ### 问题 9：是否能改用原生 EventSource
 

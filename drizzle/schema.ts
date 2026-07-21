@@ -412,12 +412,66 @@ export const agentRunEvents = pgTable(
   },
   table => ({
     runIdIdx: index("idx_agent_run_events_runId").on(table.runId),
-    runIdIdIdx: index("idx_agent_run_events_runId_id").on(table.runId, table.id),
+    runIdIdIdx: index("idx_agent_run_events_runId_id").on(
+      table.runId,
+      table.id
+    ),
   })
 );
 
 export type AgentRunEvent = typeof agentRunEvents.$inferSelect;
 export type InsertAgentRunEvent = typeof agentRunEvents.$inferInsert;
+
+/** Structured tool execution state used for retry, replay, and resume. */
+export const agentToolInvocations = pgTable(
+  "agent_tool_invocations",
+  {
+    id: serial("id").primaryKey(),
+    rootRunId: uuid("rootRunId").notNull(),
+    runId: uuid("runId").notNull(),
+    toolCallId: varchar("toolCallId", { length: 255 }).notNull(),
+    toolName: varchar("toolName", { length: 128 }).notNull(),
+    argsHash: varchar("argsHash", { length: 64 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 255 }),
+    args: jsonb("args").$type<unknown>().notNull(),
+    result: jsonb("result").$type<unknown>(),
+    status: varchar("status", { length: 32 }).notNull(),
+    error: text("error"),
+    errorType: varchar("errorType", { length: 32 }),
+    retryCount: integer("retryCount").default(0).notNull(),
+    replayedFromInvocationId: integer("replayedFromInvocationId"),
+    startedAt: timestamp("startedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completedAt", { withTimezone: true }),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    runIdIdx: index("idx_agent_tool_invocations_runId").on(table.runId),
+    rootRunIdIdx: index("idx_agent_tool_invocations_rootRunId").on(
+      table.rootRunId
+    ),
+    callIdIdx: index("idx_agent_tool_invocations_runId_toolCallId").on(
+      table.runId,
+      table.toolCallId
+    ),
+    replayIdx: index("idx_agent_tool_invocations_replay").on(
+      table.rootRunId,
+      table.toolName,
+      table.argsHash,
+      table.status
+    ),
+  })
+);
+
+export type AgentToolInvocation = typeof agentToolInvocations.$inferSelect;
+export type InsertAgentToolInvocation =
+  typeof agentToolInvocations.$inferInsert;
 
 /** Committed side effects keyed across an Agent Run retry chain. */
 export const agentToolEffects = pgTable(
@@ -435,8 +489,9 @@ export const agentToolEffects = pgTable(
       .notNull(),
   },
   table => ({
-    idempotencyUnique: uniqueIndex("idx_agent_tool_effects_idempotencyKey")
-      .on(table.idempotencyKey),
+    idempotencyUnique: uniqueIndex("idx_agent_tool_effects_idempotencyKey").on(
+      table.idempotencyKey
+    ),
     rootRunIdIdx: index("idx_agent_tool_effects_rootRunId").on(table.rootRunId),
     runIdIdx: index("idx_agent_tool_effects_runId").on(table.runId),
   })

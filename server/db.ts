@@ -28,6 +28,7 @@ import {
   agentRuns,
   agentRunSteps,
   agentRunEvents,
+  agentToolInvocations,
   agentToolEffects,
 } from "../drizzle/schema";
 import type { KnowledgeDocumentStatus } from "../shared/knowledge";
@@ -1456,6 +1457,24 @@ export async function claimNextAgentRun(input: {
 
     if (!run) return null;
 
+    if (run.status === "planning" || run.status === "running") {
+      await tx
+        .update(agentToolInvocations)
+        .set({
+          status: "unknown",
+          error: "Worker lease expired before the tool completed",
+          errorType: "lease_lost",
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentToolInvocations.runId, run.id),
+            eq(agentToolInvocations.status, "running")
+          )
+        );
+    }
+
     const [claimed] = await tx
       .update(agentRuns)
       .set({
@@ -1562,6 +1581,187 @@ export async function getAgentRunEvents(
     )
     .orderBy(agentRunEvents.id)
     .limit(limit);
+}
+
+export type AgentToolInvocationStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "unknown";
+
+export type AgentToolErrorType =
+  | "transient"
+  | "validation"
+  | "permission"
+  | "not_found"
+  | "lease_lost"
+  | "unknown";
+
+const parseJsonColumn = <T>(value: unknown): T => {
+  if (typeof value === "string") return JSON.parse(value) as T;
+  return value as T;
+};
+
+export async function startAgentToolInvocation(data: {
+  rootRunId: string;
+  runId: string;
+  toolCallId: string;
+  toolName: string;
+  argsHash: string;
+  idempotencyKey?: string;
+  args: unknown;
+  retryCount?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [invocation] = await db
+    .insert(agentToolInvocations)
+    .values({
+      rootRunId: data.rootRunId,
+      runId: data.runId,
+      toolCallId: data.toolCallId,
+      toolName: data.toolName,
+      argsHash: data.argsHash,
+      idempotencyKey: data.idempotencyKey,
+      args: JSON.stringify(data.args) as any,
+      status: "running",
+      retryCount: data.retryCount ?? 0,
+    })
+    .returning();
+
+  return invocation;
+}
+
+export async function completeAgentToolInvocation(data: {
+  id: number;
+  result: unknown;
+  status?: "succeeded" | "skipped";
+  replayedFromInvocationId?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [invocation] = await db
+    .update(agentToolInvocations)
+    .set({
+      result: JSON.stringify(data.result) as any,
+      status: data.status ?? "succeeded",
+      replayedFromInvocationId: data.replayedFromInvocationId,
+      error: null,
+      errorType: null,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(agentToolInvocations.id, data.id))
+    .returning();
+
+  return invocation ?? null;
+}
+
+export async function failAgentToolInvocation(data: {
+  id: number;
+  error: string;
+  errorType: AgentToolErrorType;
+  status?: "failed" | "unknown";
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [invocation] = await db
+    .update(agentToolInvocations)
+    .set({
+      status: data.status ?? "failed",
+      error: data.error,
+      errorType: data.errorType,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(agentToolInvocations.id, data.id))
+    .returning();
+
+  return invocation ?? null;
+}
+
+export async function findReusableAgentToolInvocation(data: {
+  rootRunId: string;
+  toolName: string;
+  argsHash: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [invocation] = await db
+    .select()
+    .from(agentToolInvocations)
+    .where(
+      and(
+        eq(agentToolInvocations.rootRunId, data.rootRunId),
+        eq(agentToolInvocations.toolName, data.toolName),
+        eq(agentToolInvocations.argsHash, data.argsHash),
+        eq(agentToolInvocations.status, "succeeded")
+      )
+    )
+    .orderBy(desc(agentToolInvocations.id))
+    .limit(1);
+
+  if (!invocation) return null;
+  return {
+    ...invocation,
+    args: parseJsonColumn<unknown>(invocation.args),
+    result: parseJsonColumn<unknown>(invocation.result),
+  };
+}
+
+export async function getAgentToolInvocationRetryCount(data: {
+  rootRunId: string;
+  toolName: string;
+  argsHash: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(agentToolInvocations)
+    .where(
+      and(
+        eq(agentToolInvocations.rootRunId, data.rootRunId),
+        eq(agentToolInvocations.toolName, data.toolName),
+        eq(agentToolInvocations.argsHash, data.argsHash),
+        inArray(agentToolInvocations.status, ["failed", "unknown"])
+      )
+    );
+
+  return Number(row?.count ?? 0);
+}
+
+export async function getReusableAgentToolInvocations(rootRunId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const invocations = await db
+    .select()
+    .from(agentToolInvocations)
+    .where(
+      and(
+        eq(agentToolInvocations.rootRunId, rootRunId),
+        eq(agentToolInvocations.status, "succeeded")
+      )
+    )
+    .orderBy(agentToolInvocations.id);
+
+  const unique = new Map<string, (typeof invocations)[number]>();
+  for (const invocation of invocations) {
+    unique.set(`${invocation.toolName}:${invocation.argsHash}`, invocation);
+  }
+
+  return Array.from(unique.values()).map(invocation => ({
+    ...invocation,
+    args: parseJsonColumn<unknown>(invocation.args),
+    result: parseJsonColumn<unknown>(invocation.result),
+  }));
 }
 
 const parseEffectResult = <T>(value: unknown): T => {
