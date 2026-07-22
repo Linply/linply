@@ -18,19 +18,16 @@ import { parseCsv, parseMarkdown, type ParsedKnowledgeEntry } from "./parse";
 
 export type KnowledgeFileType = "markdown" | "csv";
 
-function stripExtension(filename: string) {
-  return filename.replace(/\.[^./\\]+$/, "");
-}
-
 function parseFile(
   fileType: KnowledgeFileType,
   content: string,
-  category: string
+  category: string,
+  overrideInlineCategory = false
 ): ParsedKnowledgeEntry[] {
   if (fileType === "csv") {
     return parseCsv(content, category);
   }
-  return parseMarkdown(content, { category });
+  return parseMarkdown(content, { category, overrideInlineCategory });
 }
 
 /**
@@ -109,7 +106,9 @@ export async function ingestDocument(params: {
   embeddingEnabled: boolean;
 }> {
   const { filename, fileType, content, userId } = params;
-  const category = params.category?.trim() || stripExtension(filename) || "未分类";
+  const requestedCategory = params.category?.trim();
+  // A filename identifies the source document, but is not a useful knowledge category.
+  const category = requestedCategory || "未分类";
 
   const doc = await db.createKnowledgeDocument({
     filename,
@@ -120,7 +119,7 @@ export async function ingestDocument(params: {
 
   let entries: ParsedKnowledgeEntry[];
   try {
-    entries = parseFile(fileType, content, category);
+    entries = parseFile(fileType, content, category, Boolean(requestedCategory));
   } catch (error) {
     const message = error instanceof Error ? error.message : "解析失败";
     await db.updateKnowledgeDocument(doc.id, { status: "failed", error: message });

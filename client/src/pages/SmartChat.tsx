@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import type { AgentEvent } from "@/components/agentTimeline";
-import { agentEventToStep } from "@/components/agentTimeline";
-import ToolTimeline from "@/components/ToolTimeline";
+import InlineAgentActivity, {
+  AgentWorkingStatus,
+  type InlineAgentActivityItem,
+} from "@/components/InlineAgentActivity";
 import PageNav from "@/components/PageNav";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -21,13 +21,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import {
   AlertCircle,
-  ArrowRight,
+  Bot,
   ClipboardList,
   Copy,
   ExternalLink,
   RefreshCcw,
   Send,
-  Sparkles,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
@@ -62,11 +61,87 @@ type ChatMessage = {
   isStreaming?: boolean;
   runId?: string;
   agentEvents?: AgentEvent[];
+  streamItems?: ChatStreamItem[];
   structuredOutput?: StructuredOutput;
   retrieval?: RetrievalStatus | null;
   error?: string;
   sourcePrompt?: string;
 };
+
+type ChatStreamItem =
+  | { id: string; type: "text"; content: string }
+  | ({ type: "activity" } & InlineAgentActivityItem);
+
+type ChatRenderGroup =
+  | { id: string; type: "text"; content: string }
+  | { id: string; type: "activities"; items: InlineAgentActivityItem[] };
+
+const appendAgentActivity = (
+  items: ChatStreamItem[],
+  event: AgentEvent
+): ChatStreamItem[] => {
+  if (event.type === "final") return items;
+
+  if (event.type === "tool_result") {
+    const matchingIndex = items.findLastIndex(
+      item =>
+        item.type === "activity" &&
+        item.event.type === "tool_call" &&
+        item.event.toolName === event.toolName &&
+        !item.result
+    );
+    if (matchingIndex >= 0) {
+      return items.map((item, index) =>
+        index === matchingIndex && item.type === "activity"
+          ? { ...item, result: event }
+          : item
+      );
+    }
+  }
+
+  return [
+    ...items,
+    {
+      id: `activity-${items.length}-${event.type}`,
+      type: "activity",
+      event,
+    },
+  ];
+};
+
+const appendStreamText = (
+  items: ChatStreamItem[],
+  content: string
+): ChatStreamItem[] => {
+  const lastItem = items.at(-1);
+  if (lastItem?.type === "text") {
+    return [
+      ...items.slice(0, -1),
+      { ...lastItem, content: `${lastItem.content}${content}` },
+    ];
+  }
+  return [...items, { id: `text-${items.length}`, type: "text", content }];
+};
+
+const groupStreamItems = (items: ChatStreamItem[]): ChatRenderGroup[] =>
+  items.reduce<ChatRenderGroup[]>((groups, item) => {
+    if (item.type === "text") {
+      groups.push(item);
+      return groups;
+    }
+
+    const lastGroup = groups.at(-1);
+    if (lastGroup?.type === "activities") {
+      lastGroup.items.push(item);
+    } else {
+      groups.push({
+        id: `activities-${item.id}`,
+        type: "activities",
+        items: [item],
+      });
+    }
+    return groups;
+  }, []);
 
 const trimText = (value: string, maxLength: number) => {
   const compact = value.replace(/\s+/g, " ").trim();
@@ -85,31 +160,6 @@ const getPreviousUserPrompt = (messages: ChatMessage[], messageId: string) => {
   return "";
 };
 
-const categoryLabels: Record<string, string> = {
-  account: "账户",
-  order: "订单",
-  payment: "支付",
-  refund: "退款",
-  shipping: "物流",
-  warranty: "保修",
-  technical: "技术",
-  other: "其他",
-};
-
-const riskLabels: Record<string, string> = {
-  low: "低风险",
-  medium: "中风险",
-  high: "高风险",
-  urgent: "紧急",
-};
-
-const riskClasses: Record<string, string> = {
-  low: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  medium: "bg-amber-50 text-amber-700 border-amber-200",
-  high: "bg-orange-50 text-orange-700 border-orange-200",
-  urgent: "bg-red-50 text-red-700 border-red-200",
-};
-
 const buildTicketDraft = (message: ChatMessage, userPrompt: string) => {
   const structured = message.structuredOutput;
   const references =
@@ -117,7 +167,9 @@ const buildTicketDraft = (message: ChatMessage, userPrompt: string) => {
       ? message.relatedKnowledge.map(kb => `- ${kb.title}`).join("\n")
       : "无";
   const summary =
-    structured?.summary || trimText(message.content, 240) || "用户需要人工跟进。";
+    structured?.summary ||
+    trimText(message.content, 240) ||
+    "用户需要人工跟进。";
   const actions = structured?.suggestedActions?.filter(Boolean) ?? [];
   const titleSource = userPrompt || summary;
 
@@ -150,6 +202,22 @@ const buildTicketDraft = (message: ChatMessage, userPrompt: string) => {
   };
 };
 
+const getReferencedTicketId = (message: ChatMessage) =>
+  message.structuredOutput?.referencedTicketIds?.[0];
+
+const shouldShowCreateTicket = (message: ChatMessage) => {
+  if (getReferencedTicketId(message)) return false;
+
+  if (message.structuredOutput?.shouldCreateTicket) return true;
+
+  // RAG mode does not emit structured output, so use its retrieval status as
+  // the fallback signal for answers that need human follow-up.
+  return Boolean(
+    message.retrieval &&
+      (message.retrieval.degraded || message.relatedKnowledge?.length === 0)
+  );
+};
+
 export default function SmartChat() {
   const { user } = useAuth({ redirectOnUnauthenticated: true });
   const [, setLocation] = useLocation();
@@ -164,22 +232,47 @@ export default function SmartChat() {
     priority: "low" | "medium" | "high" | "urgent";
   } | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
+  const composerScrollFrameRef = useRef<number | null>(null);
 
   const { data: chatHistory } = trpc.chat.getHistory.useQuery({});
   const createTicketMutation = trpc.tickets.create.useMutation();
 
   useEffect(() => {
     if (!chatHistory) return;
-    setMessages(
-      chatHistory.map((msg: any) => ({
-        id: msg.id.toString(),
-        role: msg.role,
-        content: msg.content,
-        relatedKnowledge: msg.relatedKnowledge ?? [],
-        runId: msg.agentRunId ?? undefined,
-      }))
+    const historyMessages: ChatMessage[] = chatHistory.map((msg: any) => ({
+      id: msg.id.toString(),
+      role: msg.role,
+      content: msg.content,
+      relatedKnowledge: msg.relatedKnowledge ?? [],
+      runId: msg.agentRunId ?? undefined,
+    }));
+
+    setMessages(previousMessages =>
+      historyMessages.map(historyMessage => {
+        if (historyMessage.role !== "assistant" || !historyMessage.runId) {
+          return historyMessage;
+        }
+
+        const liveMessage = previousMessages.find(
+          message =>
+            message.role === "assistant" &&
+            message.runId === historyMessage.runId &&
+            message.streamItems?.length
+        );
+        return liveMessage
+          ? {
+              ...historyMessage,
+              id: liveMessage.id,
+              streamItems: liveMessage.streamItems,
+              structuredOutput: liveMessage.structuredOutput,
+              retrieval: liveMessage.retrieval,
+              sourcePrompt: liveMessage.sourcePrompt,
+            }
+          : historyMessage;
+      })
     );
   }, [chatHistory]);
 
@@ -212,6 +305,32 @@ export default function SmartChat() {
       }
     };
   }, [messages]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    const viewport = messagesViewportRef.current;
+    if (!composer || !viewport || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      if (!shouldAutoScrollRef.current) return;
+      if (composerScrollFrameRef.current !== null) {
+        cancelAnimationFrame(composerScrollFrameRef.current);
+      }
+      composerScrollFrameRef.current = requestAnimationFrame(() => {
+        viewport.scrollTop = viewport.scrollHeight;
+        composerScrollFrameRef.current = null;
+      });
+    });
+
+    observer.observe(composer);
+    return () => {
+      observer.disconnect();
+      if (composerScrollFrameRef.current !== null) {
+        cancelAnimationFrame(composerScrollFrameRef.current);
+        composerScrollFrameRef.current = null;
+      }
+    };
+  }, []);
 
   const assistantIsStreaming = useMemo(
     () => messages.some(message => message.isStreaming),
@@ -261,6 +380,7 @@ export default function SmartChat() {
         relatedKnowledge: [],
         isStreaming: true,
         agentEvents: [],
+        streamItems: [],
         sourcePrompt: userMessage,
       },
     ]);
@@ -300,9 +420,10 @@ export default function SmartChat() {
         if (!data) return;
         const payload = JSON.parse(data);
 
-        const eventAttempt = typeof payload.attemptCount === "number"
-          ? payload.attemptCount
-          : currentAttempt;
+        const eventAttempt =
+          typeof payload.attemptCount === "number"
+            ? payload.attemptCount
+            : currentAttempt;
         if (eventAttempt < currentAttempt) return;
         currentAttempt = Math.max(currentAttempt, eventAttempt);
 
@@ -316,6 +437,7 @@ export default function SmartChat() {
             relatedKnowledge: [],
             retrieval: null,
             agentEvents: [],
+            streamItems: [],
             structuredOutput: undefined,
             error: undefined,
             isStreaming: true,
@@ -328,6 +450,10 @@ export default function SmartChat() {
             ...message,
             runId: payload.event?.runId ?? message.runId,
             agentEvents: [...(message.agentEvents ?? []), payload.event],
+            streamItems: appendAgentActivity(
+              message.streamItems ?? [],
+              payload.event
+            ),
           }));
           return;
         }
@@ -339,7 +465,8 @@ export default function SmartChat() {
             relatedKnowledge: payload.relatedKnowledge ?? [],
             retrieval: payload.retrieval ?? message.retrieval,
             runId: payload.runId ?? message.runId,
-            structuredOutput: payload.structuredOutput ?? message.structuredOutput,
+            structuredOutput:
+              payload.structuredOutput ?? message.structuredOutput,
           }));
           return;
         }
@@ -349,6 +476,10 @@ export default function SmartChat() {
           updateAssistant(assistantId, message => ({
             ...message,
             content: `${message.content}${payload.content ?? ""}`,
+            streamItems: appendStreamText(
+              message.streamItems ?? [],
+              payload.content ?? ""
+            ),
             isStreaming: true,
           }));
           return;
@@ -397,16 +528,18 @@ export default function SmartChat() {
         if (buffer.trim()) handleEvent(buffer);
       };
 
-      const streamUrl = () => runId
-        ? `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`
-        : "/api/chat/stream";
-      const initialResponse = startPayload.mode === "agent" && runId
-        ? await fetch(streamUrl())
-        : await fetch("/api/chat/stream", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ content: userMessage }),
-          });
+      const streamUrl = () =>
+        runId
+          ? `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`
+          : "/api/chat/stream";
+      const initialResponse =
+        startPayload.mode === "agent" && runId
+          ? await fetch(streamUrl())
+          : await fetch("/api/chat/stream", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ content: userMessage }),
+            });
 
       let connectionError: unknown;
       try {
@@ -415,7 +548,11 @@ export default function SmartChat() {
         connectionError = error;
       }
 
-      for (let attempt = 0; runId && !receivedDone && !terminalError && attempt < 5; attempt++) {
+      for (
+        let attempt = 0;
+        runId && !receivedDone && !terminalError && attempt < 5;
+        attempt++
+      ) {
         await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
         try {
           await readStream(await fetch(streamUrl()));
@@ -429,7 +566,8 @@ export default function SmartChat() {
           ? connectionError
           : new Error("连接中断，暂时无法续接 Agent Run，请稍后重试");
       }
-      if (terminalError && connectionError && !receivedContent) throw connectionError;
+      if (terminalError && connectionError && !receivedContent)
+        throw connectionError;
       if (!receivedContent) throw new Error("未收到 AI 回复，请稍后重试");
 
       updateAssistant(assistantId, message => ({
@@ -495,216 +633,215 @@ export default function SmartChat() {
     }
   };
 
-  const renderStructuredOutput = (message: ChatMessage) => {
-    const structured = message.structuredOutput;
-    if (!structured) return null;
-
-    return (
-      <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-700">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <Badge variant="outline">
-            {categoryLabels[structured.category] ?? structured.category}
-          </Badge>
-          <Badge
-            variant="outline"
-            className={riskClasses[structured.riskLevel] ?? ""}
-          >
-            {riskLabels[structured.riskLevel] ?? structured.riskLevel}
-          </Badge>
-          {structured.shouldCreateTicket ? (
-            <Badge variant="secondary">建议转工单</Badge>
-          ) : null}
-        </div>
-        <p className="font-medium text-gray-900">{structured.summary}</p>
-        {structured.suggestedActions.length > 0 ? (
-          <ul className="mt-2 space-y-1">
-            {structured.suggestedActions.map((action, index) => (
-              <li key={index} className="flex gap-2">
-                <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
-                <span>{action}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
-    );
-  };
-
   return (
-    <div className="h-screen overflow-hidden bg-gray-50 pt-14">
+    <div className="h-screen overflow-hidden bg-background pt-[5.75rem]">
       <PageNav />
-      <div className="mx-auto flex h-[calc(100vh-3.5rem)] max-w-5xl flex-col px-4 py-4 sm:px-6">
-        <div className="mb-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="mx-auto flex h-[calc(100vh-5.75rem)] max-w-5xl flex-col px-3 sm:px-6">
+        <div className="flex h-[4.75rem] shrink-0 items-center justify-between border-b border-gray-200">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
-              智能客服助手
-            </h1>
-            <p className="mt-1 text-gray-600">
-              基于知识库回答问题，并在需要时执行工单操作
-            </p>
+            <h1 className="text-base font-semibold text-gray-950">智能客服</h1>
+            <p className="mt-0.5 text-xs text-gray-500">知识库与工单 Agent</p>
           </div>
-          {assistantIsStreaming ? (
-            <div className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-700">
-              <Spinner className="h-4 w-4" />
-              AI 正在处理
-            </div>
-          ) : null}
+          <div
+            className={`flex h-8 items-center gap-2 text-xs text-gray-500 transition-opacity ${
+              assistantIsStreaming
+                ? "opacity-100"
+                : "pointer-events-none opacity-0"
+            }`}
+            aria-hidden={!assistantIsStreaming}
+          >
+            <Spinner className="size-3.5" />
+            loading...
+          </div>
         </div>
 
-        <Card className="mb-4 flex min-h-0 flex-1 flex-col overflow-hidden">
-          <CardContent
-            ref={messagesViewportRef}
-            onScroll={handleMessagesScroll}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6"
-          >
-            {messages.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-center">
-                <div>
-                  <Sparkles className="mx-auto mb-3 h-8 w-8 text-blue-600" />
-                  <p className="mb-2 text-lg text-gray-600">开始与 AI 客服对话</p>
-                  <p className="text-sm text-gray-400">
-                    可以询问知识库问题，也可以查询最近工单状态
-                  </p>
-                </div>
+        <div
+          ref={messagesViewportRef}
+          onScroll={handleMessagesScroll}
+          className="min-h-0 flex-1 space-y-6 overflow-y-auto px-1 py-6 sm:px-4"
+        >
+          {messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-center">
+              <div>
+                <span className="mx-auto mb-3 flex size-10 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600">
+                  <Bot className="size-5" />
+                </span>
+                <p className="text-sm font-medium text-gray-700">
+                  开始一段新对话
+                </p>
               </div>
-            ) : (
-              messages.map(message => {
-                const timelineSteps = (message.agentEvents ?? []).map(
-                  (event, index) => agentEventToStep(event, index, message.runId)
-                );
+            </div>
+          ) : (
+            messages.map(message => {
+              const streamGroups = groupStreamItems(message.streamItems ?? []);
+              const hasStreamItems = streamGroups.length > 0;
 
-                return (
+              return (
+                <div
+                  key={message.id}
+                  className={`flex gap-3 text-sm leading-6 ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  {message.role === "assistant" ? (
+                    <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-gray-950 text-white">
+                      <Bot className="size-3.5" />
+                    </span>
+                  ) : null}
                   <div
-                    key={message.id}
-                    className={`flex ${
-                      message.role === "user" ? "justify-end" : "justify-start"
+                    className={`min-w-0 max-w-[calc(100%_-_2.5rem)] sm:max-w-[42rem] ${
+                      message.role === "user"
+                        ? "rounded-lg bg-gray-200 px-4 py-2.5 text-gray-900 sm:max-w-xl"
+                        : "w-full py-1 text-gray-900"
                     }`}
                   >
-                    <div
-                      className={`w-full max-w-[min(42rem,100%)] rounded-lg px-4 py-3 ${
-                        message.role === "user"
-                          ? "bg-blue-600 text-white sm:max-w-xl"
-                          : "border border-gray-200 bg-gray-100 text-gray-900"
-                      }`}
-                    >
-                      {message.content ? (
-                        <div className="prose prose-sm max-w-none">
-                          <Streamdown>{message.content}</Streamdown>
-                        </div>
-                      ) : message.error ? null : (
-                        <div className="flex items-center gap-2 text-gray-600">
-                          <Spinner className="h-4 w-4" />
-                          <span className="text-sm">正在分析...</span>
-                        </div>
-                      )}
-
-                      {message.error ? (
-                        <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                          <div className="flex gap-2">
-                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                            <span>{message.error}</span>
-                          </div>
-                          {message.sourcePrompt ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="mt-3 border-red-200 bg-white text-red-700 hover:bg-red-50"
-                              onClick={() => handleRetry(message)}
-                              disabled={isLoading}
+                    {message.role === "assistant" && hasStreamItems ? (
+                      <div>
+                        {streamGroups.map(group =>
+                          group.type === "text" ? (
+                            <div
+                              key={group.id}
+                              className="prose prose-sm max-w-none"
                             >
-                              <RefreshCcw className="mr-2 h-4 w-4" />
-                              重试
-                            </Button>
-                          ) : null}
-                        </div>
-                      ) : null}
-
-                      {message.role === "assistant"
-                        ? renderStructuredOutput(message)
-                        : null}
-
-                      {message.retrieval?.degraded ? (
-                        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                          知识库检索已降级为关键词匹配，答案可能需要人工确认。
-                        </div>
-                      ) : null}
-
-                      {message.relatedKnowledge &&
-                      message.relatedKnowledge.length > 0 ? (
-                        <div className="mt-3 border-t border-gray-300 pt-3 text-xs">
-                          <p className="mb-2 font-semibold text-gray-700">
-                            参考知识库
-                          </p>
-                          <div className="space-y-2">
-                            {message.relatedKnowledge.map(kb => (
-                              <div key={`${message.id}-${kb.id}`}>
-                                <Badge variant="outline" className="text-xs">
-                                  {kb.category}
-                                </Badge>
-                                <p className="mt-1 text-gray-600">{kb.title}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {message.role === "assistant" &&
-                      user?.role === "admin" &&
-                      message.runId ? (
-                        <div className="mt-3 border-t border-gray-300 pt-3">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="min-w-0">
-                              <p className="text-xs font-medium text-gray-500">
-                                Agent Run ID
-                              </p>
-                              <code className="mt-1 block break-all font-mono text-xs text-gray-700">
-                                {message.runId}
-                              </code>
+                              <Streamdown>{group.content}</Streamdown>
                             </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                              <Button
+                          ) : (
+                            <InlineAgentActivity
+                              key={group.id}
+                              items={group.items}
+                              visible
+                            />
+                          )
+                        )}
+                        <AgentWorkingStatus
+                          visible={Boolean(message.isStreaming)}
+                        />
+                      </div>
+                    ) : message.content ? (
+                      <div className="prose prose-sm max-w-none">
+                        <Streamdown>{message.content}</Streamdown>
+                      </div>
+                    ) : message.error ? null : (
+                      <AgentWorkingStatus visible />
+                    )}
+
+                    {message.error ? (
+                      <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                        <div className="flex gap-2">
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>{message.error}</span>
+                        </div>
+                        {message.sourcePrompt ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-3 border-red-200 bg-white text-red-700 hover:bg-red-50"
+                            onClick={() => handleRetry(message)}
+                            disabled={isLoading}
+                          >
+                            <RefreshCcw className="mr-2 h-4 w-4" />
+                            重试
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {message.retrieval?.degraded ? (
+                      <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                        知识库检索已降级为关键词匹配，答案可能需要人工确认。
+                      </div>
+                    ) : null}
+
+                    {message.relatedKnowledge &&
+                    message.relatedKnowledge.length > 0 ? (
+                      <div className="mt-4 border-t border-gray-200 pt-3 text-xs">
+                        <p className="mb-2 font-semibold text-gray-700">
+                          参考知识库
+                        </p>
+                        <div className="space-y-2">
+                          {message.relatedKnowledge.map(kb =>
+                            user?.role === "admin" ? (
+                              <button
+                                key={`${message.id}-${kb.id}`}
                                 type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                onClick={() => copyRunId(message.runId!)}
-                                aria-label="复制 Run ID"
-                                title="复制 Run ID"
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
                                 onClick={() =>
-                                  setLocation(`/runs/${message.runId}`)
+                                  setLocation(`/admin/knowledge?entry=${kb.id}`)
                                 }
+                                className="group flex w-full items-start justify-between gap-3 rounded-sm py-1 text-left text-gray-600 transition-colors hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                               >
-                                <ExternalLink className="mr-2 h-4 w-4" />
-                                查看详情
-                              </Button>
-                            </div>
-                          </div>
+                                <span className="min-w-0">
+                                  <span className="block text-[11px] text-gray-400">
+                                    {kb.category}
+                                  </span>
+                                  <span className="block truncate">
+                                    {kb.title}
+                                  </span>
+                                </span>
+                                <ExternalLink className="mt-1 size-3 shrink-0 text-gray-300 group-hover:text-gray-500" />
+                              </button>
+                            ) : (
+                              <div
+                                key={`${message.id}-${kb.id}`}
+                                className="py-1"
+                              >
+                                <p className="text-[11px] text-gray-400">
+                                  {kb.category}
+                                </p>
+                                <p className="text-gray-600">{kb.title}</p>
+                              </div>
+                            )
+                          )}
                         </div>
-                      ) : null}
+                      </div>
+                    ) : null}
 
-                      {message.role === "assistant" &&
-                      !message.isStreaming &&
-                      !message.error &&
-                      message.content ? (
-                        <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-300 pt-3">
-                          {message.runId && user?.role !== "admin" ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setLocation(`/runs/${message.runId}`)}
-                            >
-                              <ExternalLink className="mr-2 h-4 w-4" />
-                              查看 Run
-                            </Button>
-                          ) : null}
+                    {message.role === "assistant" && message.runId ? (
+                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
+                        <span>Agent Run</span>
+                        <code className="max-w-full truncate font-mono">
+                          {message.runId}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => copyRunId(message.runId!)}
+                          aria-label="复制 Run ID"
+                          title="复制 Run ID"
+                          className="rounded-sm p-0.5 hover:bg-gray-100 hover:text-gray-600"
+                        >
+                          <Copy className="size-2.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLocation(`/runs/${message.runId}`)}
+                          className="inline-flex items-center gap-0.5 hover:text-gray-600 hover:underline"
+                        >
+                          详情
+                          <ExternalLink className="size-2.5" />
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {message.role === "assistant" &&
+                    !message.isStreaming &&
+                    !message.error &&
+                    message.content &&
+                    (getReferencedTicketId(message) ||
+                      shouldShowCreateTicket(message)) ? (
+                      <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-200 pt-3">
+                        {getReferencedTicketId(message) ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              setLocation(
+                                `/ticket/${getReferencedTicketId(message)}`
+                              )
+                            }
+                          >
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            查看 {getReferencedTicketId(message)} 工单详情
+                          </Button>
+                        ) : shouldShowCreateTicket(message) ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -714,52 +851,56 @@ export default function SmartChat() {
                             <ClipboardList className="mr-2 h-4 w-4" />
                             转工单
                           </Button>
-                        </div>
-                      ) : null}
-
-                      {message.role === "assistant" && timelineSteps.length > 0 ? (
-                        <div className="mt-4 border-t border-gray-200 pt-3">
-                          <p className="mb-2 text-xs font-medium text-gray-500">
-                            Agent 执行记录
-                          </p>
-                          <ToolTimeline steps={timelineSteps} compact />
-                        </div>
-                      ) : null}
-                    </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
-                );
-              })
-            )}
-          </CardContent>
-        </Card>
+                </div>
+              );
+            })
+          )}
+        </div>
 
-        <form onSubmit={handleSendMessage} className="flex shrink-0 gap-2 pb-2">
-          <Input
-            type="text"
-            placeholder="输入您的问题..."
+        <form
+          ref={composerRef}
+          onSubmit={handleSendMessage}
+          className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
+        >
+          <Textarea
+            rows={1}
+            placeholder="输入消息"
             value={inputValue}
             onChange={event => setInputValue(event.target.value)}
             disabled={isLoading}
-            className="flex-1 border-gray-300 bg-white"
+            className="max-h-48 min-h-12 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
+            onKeyDown={event => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
           />
           <Button
             type="submit"
+            size="icon-lg"
             disabled={isLoading || !inputValue.trim()}
-            className="bg-blue-600 hover:bg-blue-700"
+            className="absolute bottom-3 right-3"
+            aria-label="发送消息"
+            title="发送消息"
           >
             {isLoading ? (
               <Spinner className="h-4 w-4" />
             ) : (
-              <>
-                <Send className="mr-2 h-4 w-4" />
-                发送
-              </>
+              <Send className="h-4 w-4" />
             )}
           </Button>
         </form>
       </div>
 
-      <Dialog open={Boolean(ticketDraft)} onOpenChange={open => !open && setTicketDraft(null)}>
+      <Dialog
+        open={Boolean(ticketDraft)}
+        onOpenChange={open => !open && setTicketDraft(null)}
+      >
         <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>转为工单</DialogTitle>
@@ -776,7 +917,10 @@ export default function SmartChat() {
                 <Input
                   value={ticketDraft.title}
                   onChange={event =>
-                    setTicketDraft({ ...ticketDraft, title: event.target.value })
+                    setTicketDraft({
+                      ...ticketDraft,
+                      title: event.target.value,
+                    })
                   }
                 />
               </div>

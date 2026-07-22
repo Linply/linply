@@ -1,21 +1,13 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import {
   AlertCircle,
-  ArrowRight,
+  ArrowLeft,
   Bot,
-  CircleCheck,
   Eye,
   EyeOff,
   Loader2,
@@ -134,116 +126,44 @@ export default function AuthPage({ mode }: AuthPageProps) {
   };
 
   return (
-    <main className="min-h-screen bg-[#f7f8fa] px-4 py-6 sm:px-6 sm:py-10">
-      <div className="mx-auto grid min-h-[calc(100vh-3rem)] w-full max-w-6xl items-center gap-8 lg:grid-cols-[minmax(0,1fr)_28rem] lg:gap-16">
-        <section className="order-2 lg:order-1">
-          <div className="mb-7 flex items-center gap-3 text-sm font-semibold text-gray-950">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-gray-950 text-white shadow-sm">
-              <Bot className="size-5" />
-            </div>
-            <span>客服工单 Agent</span>
-          </div>
-          <p className="mb-3 text-sm font-medium uppercase tracking-[0.18em] text-blue-700">
-            Customer support workspace
-          </p>
-          <h1 className="max-w-xl text-4xl font-semibold tracking-tight text-gray-950 sm:text-5xl">
-            客服工单系统
-          </h1>
-          <p className="mt-5 max-w-xl text-base leading-7 text-gray-600 sm:text-lg">
-            从 AI
-            问答、知识检索到工单闭环，集中体验一套可追踪、可维护的智能客服工作台。
-          </p>
+    <main className="relative flex min-h-screen flex-col bg-background px-4 py-6 sm:px-6">
+      <header className="mx-auto flex w-full max-w-6xl items-center gap-2 text-sm font-semibold text-gray-950">
+        <span className="relative flex size-8 items-center justify-center rounded-lg bg-gray-950 text-white">
+          <Bot className="size-4" />
+          <span className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500" />
+        </span>
+        客服工单 Agent
+      </header>
 
-          <div className="mt-9 max-w-xl border-t border-gray-200 pt-6">
-            <p className="mb-5 text-sm font-semibold text-gray-950">
-              建议体验路径
+      <div className="mx-auto grid w-full max-w-5xl flex-1 items-center gap-10 py-10 sm:py-14 lg:grid-cols-[26rem_minmax(0,1fr)] lg:gap-16">
+        <section className="w-full">
+          <div className="mb-6">
+            <h1 className="mt-1 text-2xl font-semibold text-gray-950">
+              {isRegister ? "创建账号" : "登录账号"}
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-gray-500">
+              {isRegister
+                ? "使用邮箱创建你的客服账号"
+                : "使用注册邮箱继续访问系统"}
             </p>
-            <ol className="space-y-5">
-              <li className="flex gap-4">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
-                  <ShieldCheck className="size-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-950">
-                    先查看管理员工作台
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-gray-600">
-                    浏览工单统计、知识库和 RAG
-                    调试入口，了解后台如何维护客服资料。
-                  </p>
-                </div>
-              </li>
-              <li className="flex gap-4">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
-                  <Bot className="size-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-950">
-                    和智能客服对话
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-gray-600">
-                    输入产品或售后问题，查看知识库引用、回答依据和 Agent
-                    的执行过程。
-                  </p>
-                </div>
-              </li>
-              <li className="flex gap-4">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
-                  <TicketCheck className="size-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-950">
-                    回到工单完成闭环
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-gray-600">
-                    创建工单、推进处理状态、补充备注，并在 Agent Run
-                    中排查每次运行结果。
-                  </p>
-                </div>
-              </li>
-            </ol>
           </div>
 
-          <div className="mt-8 flex items-center gap-2 text-sm text-gray-500">
-            <CircleCheck className="size-4 text-emerald-600" />
-            <span>登录后可直接使用内置示例数据体验完整流程</span>
-            <ArrowRight className="ml-1 size-4" />
-          </div>
-        </section>
-
-        <section className="order-1 lg:order-2">
-          <div className="mb-5 text-center lg:hidden">
-            <div className="text-xl font-semibold text-gray-950">
-              客服工单系统
-            </div>
-          </div>
-
-          <Card className="rounded-2xl border-gray-200/80 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
-            <CardHeader>
-              <CardTitle className="text-xl">
-                {isRegister ? "创建账号" : "登录账号"}
-              </CardTitle>
-              <CardDescription>
-                {isRegister
-                  ? "使用邮箱创建你的客服账号"
-                  : "使用注册邮箱继续访问系统"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <div className="p-5 sm:p-6">
               {providersQuery.data?.google ? (
                 <>
                   <Button
                     asChild
                     variant="outline"
                     className="w-full"
-                    size="lg"
+                    size="default"
                   >
                     <a href={googleOAuthUrl}>
-                      <LogIn />
+                      <LogIn className="size-4" />
                       使用 Google 登录
                     </a>
                   </Button>
-                  <div className="my-5 flex items-center gap-3 text-xs text-gray-500">
+                  <div className="my-5 flex items-center gap-3 text-xs text-gray-400">
                     <div className="h-px flex-1 bg-gray-200" />
                     <span>或使用邮箱</span>
                     <div className="h-px flex-1 bg-gray-200" />
@@ -258,7 +178,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
                 </Alert>
               ) : null}
 
-              <form className="space-y-5" onSubmit={handleSubmit}>
+              <form className="space-y-4" onSubmit={handleSubmit}>
                 {isRegister ? (
                   <div className="space-y-2">
                     <Label htmlFor="name">姓名</Label>
@@ -271,6 +191,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
                         autoComplete="name"
                         className="pl-9"
                         maxLength={80}
+                        placeholder="姓名"
                         required
                       />
                     </div>
@@ -289,6 +210,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
                       autoComplete="email"
                       className="pl-9"
                       maxLength={320}
+                      placeholder={isRegister ? "name@example.com" : undefined}
                       required
                     />
                   </div>
@@ -309,6 +231,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
                       className="px-9"
                       minLength={isRegister ? 8 : 1}
                       maxLength={128}
+                      placeholder={isRegister ? "输入密码" : undefined}
                       required
                     />
                     <button
@@ -341,6 +264,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
                       autoComplete="new-password"
                       minLength={8}
                       maxLength={128}
+                      placeholder="再次输入密码"
                       required
                     />
                   </div>
@@ -358,54 +282,113 @@ export default function AuthPage({ mode }: AuthPageProps) {
                 <Button
                   type="submit"
                   className="w-full"
-                  size="lg"
+                  size="default"
                   disabled={pending}
                 >
                   {pending ? <Loader2 className="animate-spin" /> : null}
                   {isRegister ? "注册" : "登录"}
                 </Button>
               </form>
+            </div>
 
-              {!isRegister && providersQuery.data?.demoAdmin ? (
-                <div className="mt-5 border-t border-gray-100 pt-5">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full border-gray-300 bg-gray-50/60"
-                    size="lg"
-                    onClick={handleDemoAdminLogin}
-                    disabled={pending}
-                  >
-                    {demoAdminLoginMutation.isPending ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <ShieldCheck />
-                    )}
-                    一键进入管理员演示
-                  </Button>
-                  <p className="mt-3 text-center text-xs leading-5 text-gray-500">
-                    使用已配置的演示管理员账号，无需填写邮箱和密码
-                  </p>
-                </div>
-              ) : null}
-
-              <div className="mt-6 text-center text-sm text-gray-600">
-                {isRegister ? "已有账号？" : "还没有账号？"}
-                <button
+            {!isRegister && providersQuery.data?.demoAdmin ? (
+              <div className="border-t border-gray-100 bg-gray-50 px-5 py-4 sm:px-6">
+                <Button
                   type="button"
-                  className="ml-1 font-medium text-gray-950 hover:underline"
-                  onClick={() =>
-                    setLocation(
-                      getAuthPageUrl(isRegister ? "/login" : "/register")
-                    )
-                  }
+                  variant="outline"
+                  className="w-full bg-white"
+                  size="default"
+                  onClick={handleDemoAdminLogin}
+                  disabled={pending}
                 >
-                  {isRegister ? "直接登录" : "立即注册"}
-                </button>
+                  {demoAdminLoginMutation.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ShieldCheck />
+                  )}
+                  一键进入管理员演示
+                </Button>
+                <p className="mt-3 text-center text-xs leading-5 text-gray-500">
+                  使用已配置的演示管理员账号，无需填写邮箱和密码
+                </p>
               </div>
-            </CardContent>
-          </Card>
+            ) : null}
+          </div>
+
+          <div className="mt-5 text-center text-sm text-gray-500">
+            {isRegister ? "已有账号？" : "还没有账号？"}
+            <button
+              type="button"
+              className="ml-1 font-medium text-gray-950 hover:underline"
+              onClick={() =>
+                setLocation(getAuthPageUrl(isRegister ? "/login" : "/register"))
+              }
+            >
+              {isRegister ? "直接登录" : "立即注册"}
+            </button>
+          </div>
         </section>
+
+        <aside className="border-t border-gray-200 pt-8 lg:border-l lg:border-t-0 lg:pl-12 lg:pt-0">
+          <h2 className="mt-3 text-3xl font-semibold text-gray-950">
+            客服工单Agent
+          </h2>
+          <p className="mt-4 text-sm leading-6 text-gray-600">
+            从 AI
+            问答、知识检索到工单闭环，集中体验一套可追踪、可维护的智能客服工作台。
+          </p>
+          <p className="mt-7 border-t border-gray-200 pt-6 text-sm font-semibold text-gray-950">
+            建议体验路径
+          </p>
+          <div className="mt-6 space-y-6">
+            <div className="flex gap-4">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-700">
+                <ShieldCheck className="size-4" />
+              </span>
+              <div>
+                <h3 className="text-sm font-medium text-gray-900">
+                  先查看管理员工作台
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-gray-500">
+                  浏览知识库、工单和 RAG
+                  调试入口，了解后台如何维护客服资料。
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700">
+                <Bot className="size-4" />
+              </span>
+              <div>
+                <h3 className="text-sm font-medium text-gray-900">
+                  和智能客服对话
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-gray-500">
+                  输入产品或售后问题，查看知识库引用、回答依据和 Agent
+                  的执行过程。
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-700">
+                <TicketCheck className="size-4" />
+              </span>
+              <div>
+                <h3 className="text-sm font-medium text-gray-900">
+                  回到工单完成闭环
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-gray-500">
+                  创建工单、推进处理状态、补充备注，并在 Agent Run
+                  中排查每次运行结果。
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="mt-8 flex items-center gap-2 text-sm text-gray-500">
+            <ArrowLeft className="ml-1 size-4" />
+            <span>登录后可直接使用内置示例数据体验完整流程</span>
+          </div>
+        </aside>
       </div>
     </main>
   );

@@ -14,29 +14,36 @@ import KnowledgeBase from "./pages/KnowledgeBase";
 import AgentRunDetail from "./pages/AgentRunDetail";
 import RagDebug from "./pages/RagDebug";
 import AuthPage from "./pages/AuthPage";
+import AdminOnboardingGuide from "./components/AdminOnboardingGuide";
+import { useLocation } from "wouter";
 
 function Router() {
+  const [location, setLocation] = useLocation();
+
   return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/login"}>
-        <AuthPage mode="login" />
-      </Route>
-      <Route path={"/register"}>
-        <AuthPage mode="register" />
-      </Route>
-      <Route path={"/tickets"} component={TicketList} />
-      <Route path={"/ticket/create"} component={TicketCreate} />
-      <Route path={"/ticket/:id"} component={TicketDetail} />
-      <Route path={"/chat"} component={SmartChat} />
-      <Route path={"/runs/:runId"} component={AgentRunDetail} />
-      <Route path={"/admin/dashboard"} component={AdminDashboard} />
-      <Route path={"/admin/knowledge"} component={KnowledgeBase} />
-      <Route path={"/admin/rag-debug"} component={RagDebug} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
+    <>
+      <Switch>
+        <Route path={"/"} component={Home} />
+        <Route path={"/login"}>
+          <AuthPage mode="login" />
+        </Route>
+        <Route path={"/register"}>
+          <AuthPage mode="register" />
+        </Route>
+        <Route path={"/tickets"} component={TicketList} />
+        <Route path={"/ticket/create"} component={TicketCreate} />
+        <Route path={"/ticket/:id"} component={TicketDetail} />
+        <Route path={"/chat"} component={SmartChat} />
+        <Route path={"/runs/:runId"} component={AgentRunDetail} />
+        <Route path={"/admin/dashboard"} component={AdminDashboard} />
+        <Route path={"/admin/knowledge"} component={KnowledgeBase} />
+        <Route path={"/admin/rag-debug"} component={RagDebug} />
+        <Route path={"/404"} component={NotFound} />
+        {/* Final fallback route */}
+        <Route component={NotFound} />
+      </Switch>
+      <AdminOnboardingGuide location={location} navigate={setLocation} />
+    </>
   );
 }
 

@@ -95,6 +95,15 @@ describe("parseMarkdown", () => {
     expect(entries[0].content).toContain("# 这是注释，不是标题");
   });
 
+  it("uses each section's explicit category metadata", () => {
+    const entries = parseMarkdown(
+      "# 退货规则\n分类：售后政策；关键词：退货、退款\n正文。",
+      { category: "文件名不应成为分类" }
+    );
+
+    expect(entries[0].category).toBe("售后政策");
+  });
+
   it("drops sections with no body and returns empty for blank input", () => {
     const md = ["# 只有标题", "## 也只有标题"].join("\n");
     expect(parseMarkdown(md, { category: "x" })).toEqual([]);
