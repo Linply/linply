@@ -218,6 +218,26 @@ const shouldShowCreateTicket = (message: ChatMessage) => {
   );
 };
 
+type ScrollFrameRef = { current: number | null };
+
+const cancelScheduledScroll = (frameRef: ScrollFrameRef) => {
+  if (frameRef.current === null) return;
+
+  cancelAnimationFrame(frameRef.current);
+  frameRef.current = null;
+};
+
+const scheduleScrollToBottom = (
+  viewport: HTMLDivElement,
+  frameRef: ScrollFrameRef
+) => {
+  cancelScheduledScroll(frameRef);
+  frameRef.current = requestAnimationFrame(() => {
+    viewport.scrollTop = viewport.scrollHeight;
+    frameRef.current = null;
+  });
+};
+
 export default function SmartChat() {
   const { user } = useAuth({ redirectOnUnauthenticated: true });
   const [, setLocation] = useLocation();
@@ -289,20 +309,10 @@ export default function SmartChat() {
     const viewport = messagesViewportRef.current;
     if (!viewport || !shouldAutoScrollRef.current) return;
 
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current);
-    }
-
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      viewport.scrollTop = viewport.scrollHeight;
-      scrollFrameRef.current = null;
-    });
+    scheduleScrollToBottom(viewport, scrollFrameRef);
 
     return () => {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current);
-        scrollFrameRef.current = null;
-      }
+      cancelScheduledScroll(scrollFrameRef);
     };
   }, [messages]);
 
@@ -313,22 +323,33 @@ export default function SmartChat() {
 
     const observer = new ResizeObserver(() => {
       if (!shouldAutoScrollRef.current) return;
-      if (composerScrollFrameRef.current !== null) {
-        cancelAnimationFrame(composerScrollFrameRef.current);
-      }
-      composerScrollFrameRef.current = requestAnimationFrame(() => {
-        viewport.scrollTop = viewport.scrollHeight;
-        composerScrollFrameRef.current = null;
-      });
+      scheduleScrollToBottom(viewport, composerScrollFrameRef);
     });
 
     observer.observe(composer);
     return () => {
       observer.disconnect();
-      if (composerScrollFrameRef.current !== null) {
-        cancelAnimationFrame(composerScrollFrameRef.current);
-        composerScrollFrameRef.current = null;
-      }
+      cancelScheduledScroll(composerScrollFrameRef);
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport || typeof MutationObserver === "undefined") return;
+
+    const observer = new MutationObserver(() => {
+      if (!shouldAutoScrollRef.current) return;
+      scheduleScrollToBottom(viewport, scrollFrameRef);
+    });
+
+    observer.observe(viewport, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    return () => {
+      observer.disconnect();
+      cancelScheduledScroll(scrollFrameRef);
     };
   }, []);
 
@@ -675,6 +696,9 @@ export default function SmartChat() {
             messages.map(message => {
               const streamGroups = groupStreamItems(message.streamItems ?? []);
               const hasStreamItems = streamGroups.length > 0;
+              const lastTextGroup = streamGroups.findLast(
+                group => group.type === "text"
+              );
 
               return (
                 <div
@@ -699,9 +723,18 @@ export default function SmartChat() {
                           group.type === "text" ? (
                             <div
                               key={group.id}
-                              className="prose prose-sm max-w-none"
+                              className="chat-stream-content prose prose-sm max-w-none"
+                              data-streaming={
+                                Boolean(message.isStreaming) &&
+                                group.id === lastTextGroup?.id
+                              }
                             >
-                              <Streamdown>{group.content}</Streamdown>
+                              <Streamdown
+                                className="chat-stream-markdown"
+                                isAnimating={Boolean(message.isStreaming)}
+                              >
+                                {group.content}
+                              </Streamdown>
                             </div>
                           ) : (
                             <InlineAgentActivity
@@ -712,7 +745,9 @@ export default function SmartChat() {
                           )
                         )}
                         <AgentWorkingStatus
-                          visible={Boolean(message.isStreaming)}
+                          visible={
+                            Boolean(message.isStreaming) && !lastTextGroup
+                          }
                         />
                       </div>
                     ) : message.content ? (
