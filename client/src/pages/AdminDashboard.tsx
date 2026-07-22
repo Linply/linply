@@ -1,190 +1,169 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Spinner } from "@/components/ui/spinner";
 import PageNav from "@/components/PageNav";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { trpc } from "@/lib/trpc";
+import { ChevronRight, Tickets } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { useLocation } from "wouter";
+
+const statusColors = ["#d6a63a", "#547a91", "#3f8c6d", "#a3a3a3"];
 
 export default function AdminDashboard() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
-
   const { data: stats, isLoading } = trpc.tickets.getStats.useQuery();
 
   if (!user || user.role !== "admin") {
     return (
-      <div className="min-h-screen bg-gray-50 pt-14">
+      <div className="min-h-screen bg-background pt-[5.75rem]">
         <PageNav />
-        <div className="max-w-4xl mx-auto px-6 py-6">
-          <Card>
-            <CardContent className="pt-12 pb-12 text-center">
-              <p className="text-gray-500 text-lg">您没有权限访问此页面</p>
-              <Button
-                variant="outline"
-                onClick={() => setLocation("/")}
-                className="mt-4"
-              >
-                返回首页
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        <main className="mx-auto max-w-4xl px-6 py-16 text-center">
+          <p className="text-sm font-medium text-gray-900">您没有权限访问此页面</p>
+          <Button variant="outline" size="sm" onClick={() => setLocation("/")} className="mt-4">
+            返回工作台
+          </Button>
+        </main>
       </div>
     );
   }
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 pt-14">
+      <div className="min-h-screen bg-background pt-[5.75rem]">
         <PageNav />
-        <div className="flex justify-center items-center h-[calc(100vh-3.5rem)]">
-          <Spinner />
+        <div className="flex h-[calc(100vh-5.75rem)] items-center justify-center">
+          <Spinner className="size-5" />
         </div>
       </div>
     );
   }
 
   const statusData = [
-    { name: "待处理", value: stats?.pending || 0, fill: "#FBBF24" },
-    { name: "处理中", value: stats?.inProgress || 0, fill: "#3B82F6" },
-    { name: "已解决", value: stats?.resolved || 0, fill: "#10B981" },
-    { name: "已关闭", value: stats?.closed || 0, fill: "#D1D5DB" },
+    { name: "待处理", value: stats?.pending || 0 },
+    { name: "处理中", value: stats?.inProgress || 0 },
+    { name: "已解决", value: stats?.resolved || 0 },
+    { name: "已关闭", value: stats?.closed || 0 },
   ];
 
-  const chartData = [
-    { name: "待处理", 数量: stats?.pending || 0 },
-    { name: "处理中", 数量: stats?.inProgress || 0 },
-    { name: "已解决", 数量: stats?.resolved || 0 },
-    { name: "已关闭", 数量: stats?.closed || 0 },
+  const metricData = [
+    { label: "总工单", value: stats?.total || 0, href: "/tickets" },
+    { label: "待处理", value: stats?.pending || 0, href: "/tickets?status=pending" },
+    { label: "处理中", value: stats?.inProgress || 0, href: "/tickets?status=in_progress" },
+    { label: "已解决", value: stats?.resolved || 0, href: "/tickets?status=resolved" },
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50 pt-14">
+    <div className="min-h-screen bg-background pt-[5.75rem]">
       <PageNav />
-      <div className="max-w-7xl mx-auto px-6 py-6">
-        {/* 页面标题 */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">管理员仪表盘</h1>
-          <p className="text-gray-600 mt-1">工单统计和系统概览</p>
-        </div>
+      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
+        <header className="mb-6">
+          <div>
+            <p className="text-sm text-gray-500">服务运营</p>
+            <h1 className="mt-1 text-2xl font-semibold text-gray-950">运营概览</h1>
+            <p className="mt-1 text-sm text-gray-500">当前工单状态与处理进度</p>
+          </div>
+        </header>
 
-        {/* 统计卡片 */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="text-center">
-                <p className="text-gray-600 text-sm mb-2">总工单数</p>
-                <p className="text-4xl font-bold text-gray-900">{stats?.total || 0}</p>
+        <section className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-gray-200 bg-white md:grid-cols-4">
+          {metricData.map((metric, index) => (
+            <button
+              type="button"
+              key={metric.label}
+              onClick={() => setLocation(metric.href)}
+              aria-label={`查看${metric.label}`}
+              className={`group relative px-4 py-5 text-left outline-none transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-gray-400 sm:px-5 ${
+                index % 2 ? "border-l border-gray-100" : ""
+              } ${index >= 2 ? "border-t border-gray-100 md:border-t-0" : ""} ${
+                index > 0 ? "md:border-l md:border-gray-100" : ""
+              }`}
+            >
+              <span className="flex items-center justify-between gap-2 text-xs font-medium text-gray-500">
+                {metric.label}
+                <ChevronRight className="size-3.5 text-gray-300 transition-colors group-hover:text-gray-600" />
+              </span>
+              <span className="mt-2 block text-2xl font-semibold tabular-nums text-gray-950">
+                {metric.value}
+              </span>
+            </button>
+          ))}
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
+          <div className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">状态分布</h2>
+                <p className="mt-1 text-xs text-gray-500">按当前处理状态统计</p>
               </div>
-            </CardContent>
-          </Card>
+              <Tickets className="size-4 text-gray-400" />
+            </div>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={statusData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                <CartesianGrid stroke="#ececea" vertical={false} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: "#737373", fontSize: 12 }} />
+                <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: "#a3a3a3", fontSize: 11 }} />
+                <Tooltip cursor={{ fill: "#f5f5f4" }} contentStyle={{ border: "1px solid #e5e5e5", borderRadius: 6, boxShadow: "none", fontSize: 12 }} />
+                <Bar dataKey="value" name="工单数" radius={[4, 4, 0, 0]} maxBarSize={44}>
+                  {statusData.map((entry, index) => (
+                    <Cell key={entry.name} fill={statusColors[index]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
 
-          <Card>
-            <CardContent className="pt-6">
-              <div className="text-center">
-                <p className="text-gray-600 text-sm mb-2">待处理</p>
-                <p className="text-4xl font-bold text-yellow-600">{stats?.pending || 0}</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="text-center">
-                <p className="text-gray-600 text-sm mb-2">处理中</p>
-                <p className="text-4xl font-bold text-blue-600">{stats?.inProgress || 0}</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="text-center">
-                <p className="text-gray-600 text-sm mb-2">已解决</p>
-                <p className="text-4xl font-bold text-green-600">{stats?.resolved || 0}</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* 图表 */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* 柱状图 */}
-          <Card>
-            <CardHeader>
-              <CardTitle>工单状态分布</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="数量" fill="#3B82F6" />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          {/* 饼图 */}
-          <Card>
-            <CardHeader>
-              <CardTitle>工单比例</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
+          <div className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-gray-900">工单占比</h2>
+              <p className="mt-1 text-xs text-gray-500">各状态占总量比例</p>
+            </div>
+            <div className="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-2">
+              <ResponsiveContainer width="100%" height={240}>
                 <PieChart>
                   <Pie
                     data={statusData}
                     cx="50%"
                     cy="50%"
-                    labelLine={false}
-                    label={({ name, value }) => `${name}: ${value}`}
-                    outerRadius={80}
-                    fill="#8884d8"
+                    innerRadius={52}
+                    outerRadius={82}
+                    paddingAngle={2}
                     dataKey="value"
+                    stroke="none"
                   >
                     {statusData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} />
+                      <Cell key={entry.name} fill={statusColors[index]} />
                     ))}
                   </Pie>
-                  <Tooltip />
+                  <Tooltip contentStyle={{ border: "1px solid #e5e5e5", borderRadius: 6, boxShadow: "none", fontSize: 12 }} />
                 </PieChart>
               </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* 快速操作 */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>快速操作</CardTitle>
-          </CardHeader>
-          <CardContent className="flex gap-4">
-            <Button
-              onClick={() => setLocation("/tickets")}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              查看所有工单
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setLocation("/chat")}
-            >
-              智能客服
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setLocation("/admin/knowledge")}
-            >
-              知识库
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+              <div className="space-y-3">
+                {statusData.map((item, index) => (
+                  <div key={item.name} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="flex items-center gap-2 text-gray-500">
+                      <span className="size-2 rounded-full" style={{ backgroundColor: statusColors[index] }} />
+                      {item.name}
+                    </span>
+                    <span className="font-medium tabular-nums text-gray-900">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }

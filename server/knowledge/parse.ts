@@ -5,6 +5,7 @@
  * knowledge base entries. Kept dependency-free and side-effect-free so they are
  * easy to unit test (see parse.test.ts).
  */
+import { resolveKnowledgeCategory } from "../../shared/knowledgeCategory";
 
 export type ParsedKnowledgeEntry = {
   title: string;
@@ -132,7 +133,7 @@ export function parseCsv(
     const category =
       categoryIdx >= 0 && (cells[categoryIdx] ?? "").trim()
         ? cells[categoryIdx].trim()
-        : defaultCategory;
+        : resolveKnowledgeCategory(title, content, defaultCategory);
     const keywords =
       keywordsIdx >= 0 && (cells[keywordsIdx] ?? "").trim()
         ? cells[keywordsIdx].trim()
@@ -156,7 +157,7 @@ const HEADING_RE = /^(#{1,2})\s+(.*\S)\s*$/;
  */
 export function parseMarkdown(
   text: string,
-  opts: { category: string }
+  opts: { category: string; overrideInlineCategory?: boolean }
 ): ParsedKnowledgeEntry[] {
   const lines = text.split(/\r\n|\r|\n/);
   const sections: { title: string; body: string[] }[] = [];
@@ -188,7 +189,9 @@ export function parseMarkdown(
     entries.push({
       title: clampTitle(section.title),
       content,
-      category: opts.category,
+      category: opts.overrideInlineCategory
+        ? opts.category
+        : resolveKnowledgeCategory(section.title, content, opts.category),
     });
   }
 

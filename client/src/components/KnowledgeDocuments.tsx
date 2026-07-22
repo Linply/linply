@@ -44,11 +44,11 @@ const STATUS_META: Record<
   KnowledgeDocumentStatus,
   { label: string; className: string }
 > = {
-  pending: { label: "等待中", className: "bg-gray-100 text-gray-700" },
-  parsing: { label: "解析中", className: "bg-amber-100 text-amber-800" },
-  indexing: { label: "索引中", className: "bg-blue-100 text-blue-800" },
-  completed: { label: "已完成", className: "bg-green-100 text-green-800" },
-  failed: { label: "失败", className: "bg-red-100 text-red-800" },
+  pending: { label: "等待中", className: "border-gray-200 bg-gray-100 text-gray-600" },
+  parsing: { label: "解析中", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  indexing: { label: "索引中", className: "border-sky-200 bg-sky-50 text-sky-700" },
+  completed: { label: "已完成", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  failed: { label: "失败", className: "border-red-200 bg-red-50 text-red-700" },
 };
 
 function detectFileType(name: string): "markdown" | "csv" | null {
@@ -151,12 +151,44 @@ export default function KnowledgeDocuments() {
     }
   };
 
+  const renderDeleteButton = (doc: NonNullable<typeof documents>[number], total: number) => (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-gray-500 hover:text-red-600"
+          aria-label={`删除文档 ${doc.filename}`}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>删除文档？</AlertDialogTitle>
+          <AlertDialogDescription>
+            将删除「{doc.filename}」及其生成的 {total} 条知识条目，此操作不可撤销。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => handleDelete(doc.id)}
+            className="bg-red-600 hover:bg-red-700"
+          >
+            删除
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   return (
-    <Card className="mb-6">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+    <Card className="mb-6 gap-0">
+      <CardHeader className="flex flex-row items-center justify-between gap-4 border-b border-gray-100 pb-4">
         <div>
-          <CardTitle>文档导入</CardTitle>
-          <p className="text-sm text-gray-500 mt-1">
+          <CardTitle className="text-sm">文档导入</CardTitle>
+          <p className="mt-1 text-xs text-gray-500">
             上传 Markdown / CSV，自动解析为知识条目并构建向量索引
           </p>
         </div>
@@ -168,8 +200,8 @@ export default function KnowledgeDocuments() {
           }}
         >
           <DialogTrigger asChild>
-            <Button>
-              <Upload className="w-4 h-4 mr-2" />
+            <Button size="sm">
+              <Upload className="size-4" />
               上传文档
             </Button>
           </DialogTrigger>
@@ -196,7 +228,7 @@ export default function KnowledgeDocuments() {
                   分类（可选）
                 </label>
                 <Input
-                  placeholder="Markdown 条目的分类；CSV 缺 category 列时的默认值（留空则用文件名）"
+                  placeholder="可选：统一指定分类；留空则读取 Markdown 的分类字段或自动归纳"
                   value={category}
                   onChange={e => setCategory(e.target.value)}
                 />
@@ -222,7 +254,7 @@ export default function KnowledgeDocuments() {
           </DialogContent>
         </Dialog>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pt-4">
         {isLoading ? (
           <div className="flex justify-center py-6">
             <Spinner />
@@ -232,6 +264,46 @@ export default function KnowledgeDocuments() {
             暂无上传文档
           </p>
         ) : (
+          <>
+            <div className="divide-y divide-gray-100 md:hidden">
+              {documents.map(doc => {
+                const status = doc.status as KnowledgeDocumentStatus;
+                const meta = STATUS_META[status] ?? STATUS_META.pending;
+                const total = doc.totalChunks ?? 0;
+                const embedded = doc.embeddedCount ?? 0;
+                const failed = doc.failedCount ?? 0;
+                const pct = total > 0 ? Math.round((embedded / total) * 100) : 0;
+                return (
+                  <div key={doc.id} className="py-4 first:pt-0 last:pb-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-gray-900">{doc.filename}</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{doc.fileType === "csv" ? "CSV" : "MD"}</Badge>
+                          <Badge variant="outline" className={meta.className}>{meta.label}</Badge>
+                          <span className="text-xs text-gray-400">
+                            {formatDistanceToNow(new Date(doc.createdAt), { locale: zhCN, addSuffix: true })}
+                          </span>
+                        </div>
+                      </div>
+                      {renderDeleteButton(doc, total)}
+                    </div>
+                    {total > 0 ? (
+                      <div className="mt-3 space-y-1.5">
+                        <Progress value={pct} className="h-1.5" />
+                        <p className="text-xs text-gray-500">
+                          已索引 {embedded} / {total}{failed > 0 ? `，失败 ${failed}` : ""}
+                        </p>
+                      </div>
+                    ) : null}
+                    {status === "failed" && doc.error ? (
+                      <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{doc.error}</p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -267,7 +339,7 @@ export default function KnowledgeDocuments() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge className={meta.className}>{meta.label}</Badge>
+                      <Badge variant="outline" className={meta.className}>{meta.label}</Badge>
                     </TableCell>
                     <TableCell>
                       {total > 0 ? (
@@ -289,40 +361,15 @@ export default function KnowledgeDocuments() {
                       })}
                     </TableCell>
                     <TableCell className="text-right">
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="text-gray-500 hover:text-red-600"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>删除文档？</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              将删除「{doc.filename}」及其生成的 {total} 条知识条目，此操作不可撤销。
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>取消</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => handleDelete(doc.id)}
-                              className="bg-red-600 hover:bg-red-700"
-                            >
-                              删除
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                      {renderDeleteButton(doc, total)}
                     </TableCell>
                   </TableRow>
                 );
               })}
             </TableBody>
           </Table>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

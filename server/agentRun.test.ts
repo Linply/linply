@@ -93,7 +93,50 @@ describe("agent guardrails and structured output", () => {
       true
     );
     expect(structured.category).toBe("shipping");
+    expect(structured.shouldCreateTicket).toBe(false);
     expect(structured.referencedTicketIds).toEqual([12]);
+  });
+
+  it("offers a ticket when knowledge search has no matching entries", () => {
+    const structured = buildStructuredAgentOutput({
+      userContent: "我想了解未收录的服务规则",
+      assistantContent: "知识库中暂时没有相关信息，建议创建工单由人工客服确认。",
+      events: [
+        {
+          type: "tool_result",
+          toolName: "searchKnowledge",
+          resultSummary: JSON.stringify({
+            count: 0,
+            entries: [],
+            retrieval: { mode: "vector", degraded: false },
+          }),
+        },
+      ],
+    });
+
+    expect(structured.shouldCreateTicket).toBe(true);
+    expect(structured.referencedTicketIds).toEqual([]);
+  });
+
+  it("does not trust a ticket flag when a knowledge answer is available", () => {
+    const structured = buildStructuredAgentOutput({
+      userContent: "怎么修改收货地址",
+      assistantContent:
+        '```json\n{"category":"order","riskLevel":"low","summary":"可以修改收货地址","suggestedActions":["按页面提示修改"],"shouldCreateTicket":true}\n```',
+      events: [
+        {
+          type: "tool_result",
+          toolName: "searchKnowledge",
+          resultSummary: JSON.stringify({
+            count: 1,
+            entries: [{ id: 1, title: "收货地址修改", category: "订单" }],
+            retrieval: { mode: "vector", degraded: false },
+          }),
+        },
+      ],
+    });
+
+    expect(structured.shouldCreateTicket).toBe(false);
   });
 
   it("repairs partial structured JSON embedded in model output", () => {

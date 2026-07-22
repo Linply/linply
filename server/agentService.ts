@@ -240,6 +240,28 @@ const getReferencedTicketIds = (events: AgentEvent[]) => {
   return Array.from(ids);
 };
 
+const getKnowledgeSearchSignal = (events: AgentEvent[]) => {
+  let searched = false;
+  let matched = false;
+  let degraded = false;
+
+  for (const event of events) {
+    if (event.type !== "tool_result" || event.toolName !== "searchKnowledge") {
+      continue;
+    }
+
+    searched = true;
+    const parsed = parseJsonValue<{
+      entries?: unknown[];
+      retrieval?: KnowledgeRetrieval;
+    }>(event.resultSummary, {});
+    matched ||= (parsed.entries?.length ?? 0) > 0;
+    degraded ||= parsed.retrieval?.degraded === true;
+  }
+
+  return { searched, matched, degraded };
+};
+
 const inferCategory = (text: string): StructuredAgentOutput["category"] => {
   const normalized = text.toLowerCase();
   if (/密码|登录|账户|账号|account|login/.test(normalized)) return "account";
@@ -323,6 +345,16 @@ export const buildStructuredAgentOutput = ({
 }): StructuredAgentOutput => {
   const combined = `${userContent}\n${assistantContent}`;
   const referencedTicketIds = getReferencedTicketIds(events);
+  const knowledgeSearch = getKnowledgeSearchSignal(events);
+  const explicitHandoff =
+    /创建工单|转人工|无法确认|人工客服|稍后重试|需要人工|不确定|不清楚|没有相关|未找到|未收录|无法提供|暂时没有/.test(
+      assistantContent
+    );
+  const shouldOfferTicket =
+    explicitHandoff ||
+    (knowledgeSearch.searched && !knowledgeSearch.matched) ||
+    knowledgeSearch.degraded ||
+    inferRiskLevel(combined) === "urgent";
   const fallback: StructuredAgentOutput = {
     category: inferCategory(combined),
     riskLevel: inferRiskLevel(combined),
@@ -334,16 +366,32 @@ export const buildStructuredAgentOutput = ({
         : "根据知识库回答继续沟通；信息不足时创建工单转人工处理",
     ],
     shouldCreateTicket:
-      /创建工单|转人工|无法确认|人工客服|稍后重试/.test(assistantContent) ||
-      referencedTicketIds.length === 0,
+      shouldOfferTicket,
     referencedTicketIds,
   };
 
   const parsed = extractStructuredJson(assistantContent);
   const validated = StructuredAgentOutputSchema.safeParse(parsed);
-  if (validated.success) return validated.data;
+  if (validated.success) {
+    return {
+      ...validated.data,
+      shouldCreateTicket:
+        referencedTicketIds.length === 0 &&
+        (shouldOfferTicket ||
+          (!knowledgeSearch.searched && validated.data.shouldCreateTicket)),
+      referencedTicketIds,
+    };
+  }
 
-  return repairStructuredOutput(parsed, fallback);
+  const repaired = repairStructuredOutput(parsed, fallback);
+  return {
+    ...repaired,
+    shouldCreateTicket:
+      referencedTicketIds.length === 0 &&
+      (shouldOfferTicket ||
+        (!knowledgeSearch.searched && repaired.shouldCreateTicket)),
+    referencedTicketIds,
+  };
 };
 
 const requireOpenAiAgentConfig = () => {
