@@ -163,7 +163,9 @@ export default function SmartChat() {
     description: string;
     priority: "low" | "medium" | "high" | "urgent";
   } | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
 
   const { data: chatHistory } = trpc.chat.getHistory.useQuery({});
   const createTicketMutation = trpc.tickets.create.useMutation();
@@ -181,8 +183,34 @@ export default function SmartChat() {
     );
   }, [chatHistory]);
 
+  const handleMessagesScroll = () => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+
+    const distanceFromBottom =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < 80;
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const viewport = messagesViewportRef.current;
+    if (!viewport || !shouldAutoScrollRef.current) return;
+
+    if (scrollFrameRef.current !== null) {
+      cancelAnimationFrame(scrollFrameRef.current);
+    }
+
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+      scrollFrameRef.current = null;
+    });
+
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [messages]);
 
   const assistantIsStreaming = useMemo(
@@ -218,6 +246,7 @@ export default function SmartChat() {
     const assistantId = `${now + 1}`;
     setInputValue("");
     setIsLoading(true);
+    shouldAutoScrollRef.current = true;
     setMessages(prev => [
       ...prev,
       {
@@ -523,7 +552,11 @@ export default function SmartChat() {
         </div>
 
         <Card className="mb-4 flex min-h-0 flex-1 flex-col overflow-hidden">
-          <CardContent className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+          <CardContent
+            ref={messagesViewportRef}
+            onScroll={handleMessagesScroll}
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6"
+          >
             {messages.length === 0 ? (
               <div className="flex h-full items-center justify-center text-center">
                 <div>
@@ -554,12 +587,6 @@ export default function SmartChat() {
                           : "border border-gray-200 bg-gray-100 text-gray-900"
                       }`}
                     >
-                      {message.role === "assistant" && timelineSteps.length > 0 ? (
-                        <div className="mb-3">
-                          <ToolTimeline steps={timelineSteps} compact />
-                        </div>
-                      ) : null}
-
                       {message.content ? (
                         <div className="prose prose-sm max-w-none">
                           <Streamdown>{message.content}</Streamdown>
@@ -689,12 +716,20 @@ export default function SmartChat() {
                           </Button>
                         </div>
                       ) : null}
+
+                      {message.role === "assistant" && timelineSteps.length > 0 ? (
+                        <div className="mt-4 border-t border-gray-200 pt-3">
+                          <p className="mb-2 text-xs font-medium text-gray-500">
+                            Agent 执行记录
+                          </p>
+                          <ToolTimeline steps={timelineSteps} compact />
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 );
               })
             )}
-            <div ref={messagesEndRef} />
           </CardContent>
         </Card>
 
