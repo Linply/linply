@@ -741,6 +741,7 @@ export default function SmartChat() {
                               key={group.id}
                               items={group.items}
                               visible
+                              runCompleted={!message.isStreaming && !message.error}
                             />
                           )
                         )}
