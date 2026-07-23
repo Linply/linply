@@ -29,6 +29,7 @@ export type InlineAgentActivityItem = {
 type InlineAgentActivityProps = {
   items: InlineAgentActivityItem[];
   visible: boolean;
+  runCompleted?: boolean;
 };
 
 const toolLabels: Record<string, string> = {
@@ -62,14 +63,17 @@ const getActivityIcon = (item: InlineAgentActivityItem) => {
 function ActivityRow({
   item,
   last,
+  runCompleted,
 }: {
   item: InlineAgentActivityItem;
   last: boolean;
+  runCompleted: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const Icon = getActivityIcon(item);
   const complete =
-    Boolean(item.result) || (item.event.type === "thinking" && !last);
+    Boolean(item.result) ||
+    (item.event.type === "thinking" && (runCompleted || !last));
   const hasDetails = Boolean(
     item.event.argsSummary ||
       item.event.resultSummary ||
@@ -165,6 +169,7 @@ export function AgentWorkingStatus({ visible }: { visible: boolean }) {
 export default function InlineAgentActivity({
   items,
   visible,
+  runCompleted = false,
 }: InlineAgentActivityProps) {
   if (items.length === 0) return null;
 
@@ -185,6 +190,7 @@ export default function InlineAgentActivity({
               key={item.id}
               item={item}
               last={index === items.length - 1}
+              runCompleted={runCompleted}
             />
           ))}
         </div>
