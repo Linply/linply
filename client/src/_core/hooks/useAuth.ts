@@ -1,4 +1,5 @@
 import { getAuthRedirectUrl } from "@/const";
+import { identifyUser, resetAnalytics } from "@/lib/analytics";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
@@ -36,6 +37,7 @@ export function useAuth(options?: UseAuthOptions) {
       }
       throw error;
     } finally {
+      resetAnalytics();
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
     }
@@ -55,6 +57,16 @@ export function useAuth(options?: UseAuthOptions) {
     logoutMutation.error,
     logoutMutation.isPending,
   ]);
+
+  // Attach the person to the session so replays and web analytics are attributable.
+  useEffect(() => {
+    if (!state.user) return;
+    identifyUser(state.user.id, {
+      email: state.user.email,
+      name: state.user.name,
+      role: state.user.role,
+    });
+  }, [state.user]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;

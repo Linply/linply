@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import viteConfig from "../../vite.config";
+import { injectClientEnv } from "./clientEnv";
 
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
@@ -39,7 +40,10 @@ export async function setupVite(app: Express, server: Server) {
         `src="/src/main.tsx?v=${nanoid()}"`
       );
       const page = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ "Content-Type": "text/html" }).end(page);
+      res
+        .status(200)
+        .set({ "Content-Type": "text/html" })
+        .end(injectClientEnv(page));
     } catch (e) {
       vite.ssrFixStacktrace(e as Error);
       next(e);
@@ -58,10 +62,22 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  // `index: false` so "/" falls through to the handler below and gets the env
+  // injected, instead of being served straight off disk by the static middleware.
+  app.use(express.static(distPath, { index: false }));
+
+  // Read once at boot; env changes need a restart, which is when this reruns.
+  const indexPath = path.resolve(distPath, "index.html");
+  const indexHtml = fs.existsSync(indexPath)
+    ? injectClientEnv(fs.readFileSync(indexPath, "utf-8"))
+    : null;
 
   // fall through to index.html if the file doesn't exist
   app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
+    if (!indexHtml) {
+      res.status(500).send("Client build is missing");
+      return;
+    }
+    res.status(200).set({ "Content-Type": "text/html" }).end(indexHtml);
   });
 }
