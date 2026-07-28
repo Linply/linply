@@ -1,6 +1,4 @@
 import type { Express, Request, Response } from "express";
-import { ENV } from "./_core/env";
-import { streamLLM } from "./_core/llm";
 import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import type { KnowledgeRetrieval } from "./db";
@@ -13,10 +11,6 @@ import {
   enqueueAgentRun,
   getPublicAgentErrorMessage,
 } from "./agentRunExecution";
-import {
-  LLM_TIMEOUT_MS,
-  prepareChatResponse,
-} from "./chatService";
 
 type SsePayload =
   | { type: "reset"; reason: string; attemptCount: number }
@@ -53,6 +47,9 @@ const configureSse = (res: Response) => {
 const waitForNextEvent = (ms: number) =>
   new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Agent 模式聊天的 SSE 事件推送循环：把某个 Agent Run 的执行过程实时或断线补发给前端。
+ */
 const streamAgentRunEvents = async (
   res: Response,
   runId: string,
@@ -135,11 +132,6 @@ export function registerChatStreamRoutes(app: Express) {
         }
       }
 
-      if (ENV.chatMode !== "agent") {
-        res.json({ mode: ENV.chatMode, runId: null });
-        return;
-      }
-
       const run = await enqueueAgentRun({
         userId: user.id,
         ticketId,
@@ -175,115 +167,4 @@ export function registerChatStreamRoutes(app: Express) {
     }
   });
 
-  app.post("/api/chat/stream", async (req: Request, res: Response) => {
-    configureSse(res);
-
-    const abortController = new AbortController();
-    let clientClosed = false;
-    let timedOut = false;
-    const timeoutId = ENV.chatMode === "agent" ? undefined : setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-    }, LLM_TIMEOUT_MS);
-    res.on("close", () => {
-      if (!res.writableEnded && ENV.chatMode !== "agent") {
-        clientClosed = true;
-        abortController.abort();
-      }
-    });
-
-    try {
-      const user = await authenticateRequest(req);
-      const content = typeof req.body?.content === "string"
-        ? req.body.content.trim()
-        : "";
-      const ticketId = typeof req.body?.ticketId === "number"
-        ? req.body.ticketId
-        : undefined;
-
-      if (!content) {
-        res.statusCode = 400;
-        writeSse(res, { type: "error", message: "消息内容不能为空" });
-        return;
-      }
-
-      if (ticketId !== undefined) {
-        try {
-          await getTicketForUser(ticketId, user);
-        } catch {
-          res.statusCode = 403;
-          writeSse(res, { type: "error", message: "无权访问该工单" });
-          return;
-        }
-      }
-
-      if (ENV.chatMode === "agent") {
-        const run = await enqueueAgentRun({
-          userId: user.id,
-          ticketId,
-          content,
-        });
-        await streamAgentRunEvents(res, run.id, 0, user.id, user.role === "admin");
-        return;
-      }
-
-      const { messages, relatedKnowledge, relatedKnowledgeSnapshot, retrieval } =
-        await prepareChatResponse({
-          userId: user.id,
-          userRole: user.role,
-          ticketId,
-          content,
-        });
-
-      writeSse(res, {
-        type: "meta",
-        relatedKnowledge: relatedKnowledgeSnapshot,
-        retrieval,
-        llmProvider: ENV.llmProvider,
-      });
-
-      let assistantContent = "";
-      let llmModel: string | undefined;
-
-      for await (const chunk of streamLLM({ messages }, abortController.signal)) {
-        if (chunk.type === "content" && chunk.content) {
-          assistantContent += chunk.content;
-          if (chunk.model) llmModel = chunk.model;
-          writeSse(res, { type: "delta", content: chunk.content });
-        }
-      }
-
-      if (!assistantContent) {
-        assistantContent = "抱歉，我无法处理您的请求。";
-        writeSse(res, { type: "delta", content: assistantContent });
-      }
-
-      await db.saveChatMessage({
-        ticketId,
-        userId: user.id,
-        role: "assistant",
-        content: assistantContent,
-        relatedKnowledgeIds: relatedKnowledge.map(kb => kb.id),
-        relatedKnowledgeSnapshot,
-        llmProvider: ENV.llmProvider,
-        llmModel,
-      });
-
-      writeSse(res, {
-        type: "done",
-        llmProvider: ENV.llmProvider,
-        llmModel,
-      });
-    } catch (error) {
-      if (!clientClosed) {
-        sendSseError(
-          res,
-          timedOut ? new Error("LLM call timed out，请稍后重试") : error
-        );
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      res.end();
-    }
-  });
 }

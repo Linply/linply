@@ -3,7 +3,6 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerStorageProxy } from "./storageProxy";
 import { registerLocalEmbeddingRoutes } from "./localEmbeddingServer";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -40,7 +39,6 @@ async function startServer() {
     res.status(200).json({ ok: true });
   });
   registerLocalEmbeddingRoutes(app);
-  registerStorageProxy(app);
   registerGoogleOAuthRoutes(app);
   registerChatStreamRoutes(app);
   // tRPC API

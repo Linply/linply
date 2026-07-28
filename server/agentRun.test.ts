@@ -12,7 +12,6 @@ import {
   classifyAgentToolError,
   evaluateInputGuardrails,
   evaluateAgentHandoff,
-  getAgentRagComparison,
   getAgentTraceId,
   summarizeAgentValue,
 } from "./agentService";
@@ -533,15 +532,4 @@ describe("agent handoff, tracing, and comparison metadata", () => {
     expect(evaluation.recommendedAgent).toBe("technical_support");
   });
 
-  it("captures Agent SDK versus simple RAG comparison notes", () => {
-    const comparison = getAgentRagComparison({
-      latencyMs: 1234,
-      toolCallCount: 2,
-      toolResultCount: 2,
-    });
-
-    expect(comparison.simpleRag.strengths[0]).toContain("延迟");
-    expect(comparison.agentSdk.strengths[0]).toContain("工单工具");
-    expect(comparison.observedRun.toolCallCount).toBe(2);
-  });
 });

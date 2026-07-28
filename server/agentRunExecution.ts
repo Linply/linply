@@ -1,6 +1,6 @@
 import type { AgentRun } from "../drizzle/schema";
 import { ENV } from "./_core/env";
-import { LLM_TIMEOUT_MS } from "./chatService";
+import { LLM_TIMEOUT_MS } from "./agentUtils";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
 

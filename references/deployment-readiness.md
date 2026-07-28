@@ -6,9 +6,7 @@
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：只用于首次运行 `pnpm auth:create-admin`，不要提交真实值。
 - `APP_BASE_URL`：应用的 HTTPS origin，用于生成 Google OAuth callback。
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证。
-- `LLM_PROVIDER=openai`：使用 OpenAI Responses API。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容服务配置。
-- `CHAT_MODE=rag|agent`：`rag` 为直接 RAG，`agent` 为 OpenAI Agents SDK。
 - `EMBEDDING_PROVIDER=local|openai|voyage`：embedding 服务提供方。
 - `RAG_EMBEDDINGS_ENABLED=true`：生产建议启用；服务不可用时仍会回退关键词检索。
 
@@ -28,4 +26,4 @@
 - 日志只记录 LLM/embedding provider、model、耗时、token 或维度等元信息，不记录用户原文。
 - OpenAI/API key、Authorization、cookie、password 类字段会在日志错误信息中脱敏。
 - `AGENT_TRACING_ENABLED=true` 时仍保持 `includeSensitiveData=false`。
-- Agent 模式上线前确认 `agent_runs` / `agent_run_steps` 表已迁移成功。
+- 上线前确认 `agent_runs` / `agent_run_steps` 表已迁移成功。

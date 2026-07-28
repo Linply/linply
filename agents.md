@@ -25,11 +25,11 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
    ├── PostgreSQL + pgvector   数据 & 向量存储
    ├── Embedding 服务          本地 bge-small-zh-v1.5 / OpenAI / Voyage
    ├── Agent Worker            queued Run 的独立执行进程
-   └── LLM API                 OpenAI 兼容 / Manus Forge
+   └── LLM API                 OpenAI 兼容
 ```
 
 - **前端**：页面分为首页、工单管理、智能客服、知识库、RAG 调试、Agent Run 详情、管理仪表盘；路由用 wouter，数据用 tRPC + React Query。
-- **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth` / `system`），数据库访问集中在 `server/db.ts`。
+- **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth`），数据库访问集中在 `server/db.ts`。
 - **Agent 执行**：Web 进程负责创建 queued Run 和订阅 SSE；`AGENT_EXECUTION_MODE=inline` 时由应用进程执行，设为 `worker` 时由独立 Worker 通过 PostgreSQL 租约领取并执行。
 - **认证**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
 
@@ -68,12 +68,9 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 ## 智能客服 Agent
 
-系统支持两种聊天运行模式，由 `CHAT_MODE` 控制：
+聊天固定使用服务端 OpenAI Agents SDK：用户提问 → 创建 Agent Run → Agent 调用工具 → SSE 推送执行事件和文本增量 → 保存最终回答、结构化结果和步骤。
 
-- `CHAT_MODE=rag`：直接 RAG 流程，用户提问 → 检索知识库 → 组织 prompt 调用 LLM → 返回回答并保存引用来源。
-- `CHAT_MODE=agent`：服务端 OpenAI Agents SDK 流程，用户提问 → 创建 Agent Run → Agent 调用工具 → SSE 推送执行事件和文本增量 → 保存最终回答、结构化结果和步骤。
-
-Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/chat/stream/:runId` 订阅事件；直接 RAG 仍使用 `POST /api/chat/stream`。SSE 以 JSON `type` 区分 `agent_event`、`delta`、`meta`、`done`、`error` 和重试时的 `reset`，Agent 事件同时带有 SSE `id`，客户端通过 `afterSeq` 续接。非流式 tRPC `chat.sendMessage` 仍保留，用于兼容和测试。
+Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/chat/stream/:runId` 订阅事件。SSE 以 JSON `type` 区分 `agent_event`、`delta`、`meta`、`done`、`error` 和重试时的 `reset`，Agent 事件同时带有 SSE `id`，客户端通过 `afterSeq` 续接。
 
 **检索策略（RAG）**
 
@@ -219,7 +216,7 @@ pnpm dev
 
 > 端口：应用 3000、PostgreSQL 5432、embeddings 8080。embeddings 镜像仅有 amd64 版本，Apple 芯片需在 `compose.yaml` 中以 `platform: linux/amd64` 经 Rosetta 运行；首次会下载 `BAAI/bge-small-zh-v1.5` 权重并缓存到 `tei_data` 卷。
 >
-> 更新到包含 Agent Run 的版本后，务必执行 `pnpm db:migrate`，否则聊天在 `CHAT_MODE=agent` 下会因缺少 `agent_runs` / `agent_run_steps` 表而失败。
+> 部署前务必执行 `pnpm db:migrate`，否则聊天会因缺少 `agent_runs` / `agent_run_steps` 表而失败。
 
 ### 环境变量（要点）
 
@@ -237,10 +234,8 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace-with-a-strong-password
 ADMIN_NAME=系统管理员
 
-# LLM（openai 兼容 或 manus）
-LLM_PROVIDER=openai
+# LLM（OpenAI 兼容）
 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
-CHAT_MODE=rag                  # rag 或 agent
 AGENT_TRACING_ENABLED=false
 AGENT_HANDOFFS_ENABLED=false
 AGENT_EXECUTION_MODE=inline    # inline 或 worker；生产 Web + Worker 使用 worker
@@ -295,7 +290,7 @@ Agent 模式的 Railway 部署需要单独创建 `agent-worker` Service。Web Se
 
 ### 排查与维护
 
-- 服务问题先看后端日志与 `.manus-logs/`；嵌入相关用 `pnpm kb:embed:check`，本地独立 TEI 服务可看 `docker logs customer_service_agent_embeddings`，Railway demo 主要看 app 日志。
+- 服务问题先看后端日志；嵌入相关用 `pnpm kb:embed:check`，本地独立 TEI 服务可看 `docker logs customer_service_agent_embeddings`，Railway demo 主要看 app 日志。
 - 聊天失败且错误指向 `agent_runs` 时，先执行 `pnpm db:migrate`，再重试 `/api/chat/stream`。
 - Agent 连接中断时先确认 `agent_run_events` 已完成迁移；随后可按 Run ID 刷新 `/runs/:runId`，检查事件、attempt、租约和最终状态。
 - Worker 反复重试或出现租约错误时，检查 `AGENT_WORKER_LEASE_MS`、数据库时钟、Worker 日志和 `agent_runs.leaseExpiresAt`；不要通过重复发送消息来恢复连接。
@@ -318,7 +313,7 @@ Agent 模式的 Railway 部署需要单独创建 `agent-worker` Service。Web Se
 | 后端 | Express 4、tRPC 11 |
 | 数据库 | PostgreSQL 16 + pgvector、Drizzle ORM |
 | 向量 | BAAI/bge-small-zh-v1.5（本地，512 维）/ OpenAI / Voyage |
-| LLM | OpenAI Responses API / Manus Forge |
+| LLM | OpenAI Agents SDK |
 | Agent | OpenAI Agents SDK |
 | 认证 | 邮箱密码 + Google OAuth + PostgreSQL Session |
 

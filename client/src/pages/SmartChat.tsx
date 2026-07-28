@@ -210,8 +210,6 @@ const shouldShowCreateTicket = (message: ChatMessage) => {
 
   if (message.structuredOutput?.shouldCreateTicket) return true;
 
-  // RAG mode does not emit structured output, so use its retrieval status as
-  // the fallback signal for answers that need human follow-up.
   return Boolean(
     message.retrieval &&
       (message.retrieval.degraded || message.relatedKnowledge?.length === 0)
@@ -549,18 +547,13 @@ export default function SmartChat() {
         if (buffer.trim()) handleEvent(buffer);
       };
 
+      if (!runId) {
+        throw new Error("未创建 Agent Run，请稍后重试");
+      }
+      const streamRunId = runId;
       const streamUrl = () =>
-        runId
-          ? `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`
-          : "/api/chat/stream";
-      const initialResponse =
-        startPayload.mode === "agent" && runId
-          ? await fetch(streamUrl())
-          : await fetch("/api/chat/stream", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ content: userMessage }),
-            });
+        `/api/chat/stream/${encodeURIComponent(streamRunId)}?afterSeq=${lastEventId}`;
+      const initialResponse = await fetch(streamUrl());
 
       let connectionError: unknown;
       try {

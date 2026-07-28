@@ -9,14 +9,13 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 - 后端：Express 4、OpenAI Agents SDK
 - 数据库：PostgreSQL 16 + pgvector、Drizzle ORM
 - 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
-- LLM：OpenAI Responses API / Manus Forge 兼容路径
+- LLM：OpenAI Agents SDK
 - 认证：邮箱密码 + Google OAuth、数据库 Session、用户与管理员权限隔离
 
 ## 核心能力
 
 - 工单管理：创建、筛选、搜索、详情、状态流转、备注、统计。
-- 智能客服：RAG 检索知识库，生成回答并展示引用来源。
-- Agent 模式：通过 OpenAI Agents SDK 调用知识库和工单工具，支持 SSE 流式事件。
+- 智能客服：通过 OpenAI Agents SDK 调用知识库和工单工具，支持 SSE 流式事件与断线恢复。
 - 知识库管理：手动维护、Markdown/CSV 文档导入、embedding 回填、冲突检测。
 - Agent Run 排查：使用 UUID 标识运行，保存步骤、最终回答、错误和结构化结果，支持从管理员聊天回复直接查看与重试。
 - 观测与安全：记录 LLM/embedding 耗时和 token/维度元信息，日志脱敏敏感凭据。
@@ -61,9 +60,7 @@ cp .env.example .env
 - `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD`：可选，仅用于登录页的管理员演示入口；账号必须已通过 `pnpm auth:create-admin` 初始化并具有管理员角色。
 - `APP_BASE_URL`：应用公网 origin，用于生成 OAuth callback。
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证；缺失时入口自动隐藏。
-- `LLM_PROVIDER=openai|manus`：LLM provider。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容模型配置。
-- `CHAT_MODE=rag|agent`：直接 RAG 或 Agent SDK 模式。
 - `EMBEDDING_PROVIDER=local|openai|voyage`：embedding provider。
 - `LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5`：本地 embedding 对外模型名，向量维度为 512。
 - `LOCAL_EMBEDDING_RUNTIME_MODEL=Xenova/bge-small-zh-v1.5`：app 内置 Transformers.js endpoint 的运行模型。
@@ -111,7 +108,6 @@ test-data/       知识库导入测试数据
 - OpenAI provider Responses API mock 与错误脱敏
 - embedding 请求、解析、cosine similarity
 - RAG 关键词召回质量
-- `chat.sendMessage` 召回、回复、保存消息
 - Agent tool 入参校验、结果摘要、结构化输出兜底
 - Agent Run 状态与步骤类型
 - 密码哈希、Google OAuth PKCE/state、数据库 Session 与认证登出
@@ -160,7 +156,7 @@ DATABASE_URL: ${{Postgres.DATABASE_URL}}
 LOCAL_EMBEDDING_BASE_URL: ${{app.APP_BASE_URL}}
 ```
 
-worker 还需与 app 使用相同的 `OPENAI_*`、`CHAT_MODE=agent` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
+worker 还需与 app 使用相同的 `OPENAI_*` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
 worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，但不配置公网域名。
 
 `LOCAL_EMBEDDING_API_KEY` 在 Railway 中已设置为服务内 token。公网直接访问 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。
@@ -170,11 +166,11 @@ worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，�
 ## 部署要点
 
 1. 设置生产环境变量，尤其是 `DATABASE_URL`、`APP_BASE_URL`、LLM 和 embedding 配置。
-2. 执行 `pnpm db:migrate`。首次切换到邮箱认证的迁移会清空旧 Manus 用户和历史业务数据。
+2. 执行 `pnpm db:migrate`。
 3. 使用 `ADMIN_EMAIL`、`ADMIN_PASSWORD` 运行一次 `pnpm auth:create-admin`。
 4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
 5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-6. Agent 模式下创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
+6. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
 7. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查邮箱登录、Google 登录、用户隔离、管理员页面和 Agent Run 租约恢复。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。

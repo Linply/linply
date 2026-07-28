@@ -1,9 +1,8 @@
-import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
-import { createChatResponse, parseJsonValue } from "./chatService";
+import { parseJsonValue } from "./agentUtils";
 import { createAgentChatResponse } from "./agentService";
 import { enqueueAgentRun } from "./agentRunExecution";
 import { ingestDocument } from "./knowledge/ingest";
@@ -84,7 +83,6 @@ const reindexKnowledgeEntry = async (id: number) => {
 };
 
 export const appRouter = router({
-  system: systemRouter,
   auth: router({
     providers: publicProcedure.query(() => ({
       google: isGoogleOAuthConfigured(),
@@ -509,32 +507,6 @@ export const appRouter = router({
         });
       }),
 
-    // 发送消息并获取 AI 回复（基于 RAG）
-    sendMessage: protectedProcedure
-      .input(z.object({
-        ticketId: z.number().optional(),
-        content: z.string().min(1),
-      }))
-      .mutation(async ({ input, ctx }) => {
-        if (input.ticketId !== undefined) {
-          await getTicketForUser(input.ticketId, ctx.user);
-        }
-        if (ENV.chatMode === "agent") {
-          return createAgentChatResponse({
-            userId: ctx.user.id,
-            userRole: ctx.user.role,
-            ticketId: input.ticketId,
-            content: input.content,
-          });
-        }
-
-        return createChatResponse({
-          userId: ctx.user.id,
-          userRole: ctx.user.role,
-          ticketId: input.ticketId,
-          content: input.content,
-        });
-      }),
   }),
 
   // ============ Agent Runs Router ============

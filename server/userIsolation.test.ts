@@ -15,14 +15,6 @@ vi.mock("./db", () => ({
   updateTicket: vi.fn(),
 }));
 
-vi.mock("./chatService", async importOriginal => {
-  const actual = await importOriginal<typeof import("./chatService")>();
-  return {
-    ...actual,
-    createChatResponse: vi.fn(),
-  };
-});
-
 vi.mock("./agentService", () => ({
   createAgentChatResponse: vi.fn(),
 }));
@@ -92,7 +84,7 @@ describe("user resource isolation", () => {
     mockedDb.getAgentRunById.mockResolvedValue(runB);
   });
 
-  it("rejects A from every ticket and chat endpoint for B's ticket", async () => {
+  it("rejects A from every ticket and chat history endpoint for B's ticket", async () => {
     const caller = appRouter.createCaller(createContext());
 
     await expect(caller.tickets.getById({ id: ticketB.id }))
@@ -109,11 +101,6 @@ describe("user resource isolation", () => {
     })).rejects.toThrow("Unauthorized");
     await expect(caller.chat.getHistory({ ticketId: ticketB.id }))
       .rejects.toThrow("Unauthorized");
-    await expect(caller.chat.sendMessage({
-      ticketId: ticketB.id,
-      content: "读取 B 的工单",
-    })).rejects.toThrow("Unauthorized");
-
     expect(mockedDb.getTicketNotes).not.toHaveBeenCalled();
     expect(mockedDb.getTicketChatHistory).not.toHaveBeenCalled();
     expect(mockedDb.getChatHistory).not.toHaveBeenCalled();

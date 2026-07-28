@@ -9,7 +9,7 @@ import {
   parseJsonValue,
   withTimeout,
   LLM_TIMEOUT_MS,
-} from "./chatService";
+} from "./agentUtils";
 import type { KnowledgeRetrieval } from "./db";
 import {
   getRecentChatHistoryForUser,
@@ -396,7 +396,7 @@ export const buildStructuredAgentOutput = ({
 
 const requireOpenAiAgentConfig = () => {
   if (!ENV.openAiApiKey) {
-    throw new Error("OPENAI_API_KEY is required when CHAT_MODE=agent");
+    throw new Error("OPENAI_API_KEY is required for the customer service Agent");
   }
 };
 
@@ -744,34 +744,6 @@ const getRunMetrics = (startedAt: number, events: AgentEvent[]) => ({
   latencyMs: Date.now() - startedAt,
   toolCallCount: events.filter(event => event.type === "tool_call").length,
   toolResultCount: events.filter(event => event.type === "tool_result").length,
-});
-
-export const getAgentRagComparison = (metrics: {
-  latencyMs: number;
-  toolCallCount: number;
-  toolResultCount: number;
-}) => ({
-  simpleRag: {
-    strengths: [
-      "固定一次检索加一次模型调用，路径短，延迟和成本更稳定",
-      "实现简单，适合常见 FAQ 和知识库问答",
-    ],
-    limitations: [
-      "不能自然调用创建工单、查询工单、添加备注等动作",
-      "缺少可恢复的执行步骤和工具审计",
-    ],
-  },
-  agentSdk: {
-    strengths: [
-      "可按需调用知识库和工单工具，能完成查询、总结、创建、备注等多步任务",
-      "Run/Step、SSE 事件、结构化输出和 tracing 更适合排查复杂客服流程",
-    ],
-    limitations: [
-      "可能产生多轮模型调用和工具调用，延迟与成本波动更大",
-      "需要更严格的权限、脱敏、guardrail 和回归测试",
-    ],
-  },
-  observedRun: metrics,
 });
 
 export const agentTools = [
@@ -1307,7 +1279,6 @@ export async function createAgentChatResponse(input: {
           structuredOutput,
           retrieval,
           handoffEvaluation,
-          comparison: getAgentRagComparison(metrics),
           metrics,
         }),
       },
@@ -1574,7 +1545,6 @@ export async function streamAgentChatResponse(
       structuredOutput,
       retrieval,
       handoffEvaluation,
-      comparison: getAgentRagComparison(metrics),
       metrics,
     });
 

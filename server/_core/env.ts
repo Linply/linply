@@ -7,7 +7,6 @@ export const ENV = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
   demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
-  chatMode: process.env.CHAT_MODE ?? "rag",
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",
   agentExecutionMode:
@@ -15,10 +14,7 @@ export const ENV = {
   agentWorkerPollMs: Number(process.env.AGENT_WORKER_POLL_MS ?? 500),
   agentWorkerLeaseMs: Number(process.env.AGENT_WORKER_LEASE_MS ?? 60_000),
   agentWorkerMaxAttempts: Number(process.env.AGENT_WORKER_MAX_ATTEMPTS ?? 3),
-  llmProvider: process.env.LLM_PROVIDER ?? "manus",
   isProduction: process.env.NODE_ENV === "production",
-  forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
-  forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-5.5",
