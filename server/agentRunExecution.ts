@@ -1,6 +1,13 @@
 import type { AgentRun } from "../drizzle/schema";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { ENV } from "./_core/env";
-import { LLM_TIMEOUT_MS } from "./agentUtils";
+import {
+  createRemoteTraceContext,
+  getActiveTraceContext,
+  type TelemetryTraceContext,
+  withActiveSpan,
+} from "./_core/observability";
+import { LLM_TIMEOUT_MS, parseJsonValue } from "./agentUtils";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
 
@@ -42,6 +49,7 @@ export async function enqueueAgentRun(input: {
   content: string;
   retryOfRunId?: string;
 }) {
+  const telemetry = getActiveTraceContext();
   const run = await db.createAgentRun({
     userId: input.userId,
     ticketId: input.ticketId,
@@ -50,9 +58,11 @@ export async function enqueueAgentRun(input: {
     llmProvider: "openai-agents",
     llmModel: ENV.openAiModel,
     retryOfRunId: input.retryOfRunId,
+    traceId: telemetry?.traceId,
     metadata: {
       mode: "stream",
       executionMode: ENV.agentExecutionMode,
+      telemetry,
     },
   });
 
@@ -70,7 +80,7 @@ export async function enqueueAgentRun(input: {
   return run;
 }
 
-export async function executeAgentRun(
+async function executeAgentRunInternal(
   run: AgentRun,
   worker?: { workerId: string; leaseMs: number }
 ) {
@@ -143,6 +153,7 @@ export async function executeAgentRun(
     await appendAgentStreamEvent(run.id, "done", {
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
+      stats: result.runStats,
       attemptCount: run.attemptCount,
     });
   } catch (error) {
@@ -163,6 +174,20 @@ export async function executeAgentRun(
     });
     await appendAgentStreamEvent(run.id, "error", {
       message,
+      stats: await db.getAgentRunById(run.id).then(currentRun =>
+        currentRun
+          ? {
+              durationMs: currentRun.durationMs,
+              inputTokens: currentRun.inputTokens,
+              outputTokens: currentRun.outputTokens,
+              totalTokens: currentRun.totalTokens,
+              llmRequestCount: currentRun.llmRequestCount,
+              contextWindowTokens: currentRun.contextWindowTokens,
+              traceId: currentRun.traceId,
+              spanId: currentRun.spanId,
+            }
+          : undefined
+      ),
       attemptCount: run.attemptCount,
     });
   } finally {
@@ -177,4 +202,63 @@ export async function executeAgentRun(
       });
     }
   }
+}
+
+export async function executeAgentRun(
+  run: AgentRun,
+  worker?: { workerId: string; leaseMs: number }
+) {
+  const metadata = parseJsonValue<Record<string, unknown>>(run.metadata, {});
+  const parentTrace = parseJsonValue<TelemetryTraceContext | null>(
+    metadata.telemetry,
+    null
+  );
+  const parentContext = createRemoteTraceContext(parentTrace);
+
+  return withActiveSpan(
+    "agent.run",
+    {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.request.model": run.llmModel ?? ENV.openAiModel,
+      "agent.run.id": run.id,
+      "agent.run.attempt": run.attemptCount,
+      "agent.execution.mode": worker ? "worker" : "inline",
+      "agent.user.id": run.userId,
+      ...(run.ticketId ? { "agent.ticket.id": run.ticketId } : {}),
+    },
+    async span => {
+      const telemetry = getActiveTraceContext();
+      if (telemetry) {
+        await db.updateAgentRun(
+          run.id,
+          { traceId: telemetry.traceId, spanId: telemetry.spanId },
+          worker
+            ? {
+                workerId: worker.workerId,
+                attemptCount: run.attemptCount,
+              }
+            : undefined
+        );
+      }
+
+      await executeAgentRunInternal(run, worker);
+      const completedRun = await db.getAgentRunById(run.id);
+      if (completedRun) {
+        span.setAttributes({
+          "agent.run.status": completedRun.status,
+          "agent.run.duration_ms": completedRun.durationMs ?? 0,
+          "gen_ai.usage.input_tokens": completedRun.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": completedRun.outputTokens ?? 0,
+          "gen_ai.usage.total_tokens": completedRun.totalTokens ?? 0,
+        });
+        if (completedRun.status === "failed") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: completedRun.error ?? "Agent Run failed",
+          });
+        }
+      }
+    },
+    parentContext
+  );
 }

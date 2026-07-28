@@ -471,6 +471,16 @@ export const appRouter = router({
           input.limit,
           ctx.user
         );
+        const runIds: string[] = Array.from(
+          new Set(
+            history
+              .map(message => message.agentRunId)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        const runById = new Map(
+          (await db.getAgentRunSummaries(runIds)).map(run => [run.id, run])
+        );
         const ids = history.flatMap(message =>
           parseJsonValue<number[]>(message.relatedKnowledgeIds, [])
         );
@@ -503,6 +513,9 @@ export const appRouter = router({
             ...message,
             relatedKnowledgeIds,
             relatedKnowledge,
+            runStats: message.agentRunId
+              ? (runById.get(message.agentRunId) ?? null)
+              : null,
           };
         });
       }),

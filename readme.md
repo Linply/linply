@@ -67,6 +67,8 @@ cp .env.example .env
 - `LOCAL_EMBEDDING_API_KEY`：可选；设置后 `/v1/embeddings` 需要 Bearer token。
 - `RAG_EMBEDDINGS_ENABLED=true|false`：关闭后使用关键词检索兜底。
 - `AGENT_TRACING_ENABLED=false`：开启 OpenAI Agents tracing 时仍不包含敏感原始数据。
+- `OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=...`：通过 OTLP/HTTP 导出 Web、Worker、Agent 工具和模型 HTTP 链路；Web 与 Worker 应使用同一 Collector。
+- `OPENAI_CONTEXT_WINDOW_TOKENS=272000`：仅用于聊天和 Run 详情中的 Token 窗口占比参考。
 - `AGENT_EXECUTION_MODE=inline|worker`：本地默认 `inline`；Railway Web 服务使用 `worker`，只负责创建 queued Run。
 - `AGENT_WORKER_POLL_MS` / `AGENT_WORKER_LEASE_MS` / `AGENT_WORKER_MAX_ATTEMPTS`：独立 worker 的轮询、租约和最大尝试次数。
 

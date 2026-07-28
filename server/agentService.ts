@@ -2,6 +2,10 @@ import { Agent, OpenAIProvider, Runner, tool } from "@openai/agents";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ENV } from "./_core/env";
+import {
+  getActiveTraceContext,
+  withActiveSpan,
+} from "./_core/observability";
 import * as db from "./db";
 import {
   CHAT_HISTORY_LIMIT,
@@ -499,6 +503,7 @@ const createBlockedGuardrailRun = async (input: {
   message: string;
   mode: "stream" | "non_stream";
 }) => {
+  const telemetry = getActiveTraceContext();
   const runRecord = await db.createAgentRun({
     userId: input.userId,
     ticketId: input.ticketId,
@@ -507,7 +512,12 @@ const createBlockedGuardrailRun = async (input: {
     llmProvider: "openai-agents",
     llmModel: ENV.openAiModel,
     retryOfRunId: input.retryOfRunId,
-    metadata: { mode: input.mode, guardrail: "sensitive_information" },
+    traceId: telemetry?.traceId,
+    metadata: {
+      mode: input.mode,
+      guardrail: "sensitive_information",
+      telemetry,
+    },
   });
 
   await db.addAgentRunStep({
@@ -635,80 +645,93 @@ const executeTrackedAgentTool = async <TResult>({
   idempotencyKey,
   execute,
   summarizeResult,
-}: TrackedToolOptions<TResult>): Promise<TResult> => {
-  await emitToolCall(context, toolName, input);
+}: TrackedToolOptions<TResult>): Promise<TResult> =>
+  withActiveSpan(
+    `agent.tool.${toolName}`,
+    {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": toolName,
+      "agent.run.id": context?.runId ?? "untracked",
+      "agent.tool.has_idempotency_key": Boolean(idempotencyKey),
+    },
+    async span => {
+      await emitToolCall(context, toolName, input);
 
-  const summarize = (result: TResult) => summarizeResult?.(result) ?? result;
-  if (!context?.runId) {
-    const result = await execute();
-    await emitToolResult(context, toolName, summarize(result));
-    return result;
-  }
+      const summarize = (result: TResult) => summarizeResult?.(result) ?? result;
+      if (!context?.runId) {
+        const result = await execute();
+        await emitToolResult(context, toolName, summarize(result));
+        return result;
+      }
 
-  const argsHash = buildToolArgsHash(input);
-  const identity = {
-    rootRunId: context.rootRunId ?? context.runId,
-    toolName,
-    argsHash,
-  };
-  const [reusable, retryCount] = await Promise.all([
-    db.findReusableAgentToolInvocation(identity),
-    db.getAgentToolInvocationRetryCount(identity),
-  ]);
-  const invocation = await db.startAgentToolInvocation({
-    ...identity,
-    runId: context.runId,
-    toolCallId: details?.toolCall?.callId ?? randomUUID(),
-    idempotencyKey,
-    args: input,
-    retryCount,
-  });
-
-  if (reusable) {
-    const result = reusable.result as TResult;
-    await db.completeAgentToolInvocation({
-      id: invocation.id,
-      result,
-      status: "skipped",
-      replayedFromInvocationId: reusable.id,
-    });
-    await emitToolResult(
-      context,
-      toolName,
-      addReplayMetadata(summarize(result), reusable.runId)
-    );
-    return result;
-  }
-
-  try {
-    const result = await execute();
-    await db.completeAgentToolInvocation({ id: invocation.id, result });
-    await emitToolResult(context, toolName, summarize(result));
-    return result;
-  } catch (error) {
-    const errorType = classifyAgentToolError(error);
-    await db
-      .failAgentToolInvocation({
-        id: invocation.id,
-        error: toolError(error),
-        errorType,
-        status: errorType === "unknown" ? "unknown" : "failed",
-      })
-      .catch(persistError => {
-        console.error("[Agent] Failed to persist tool failure", {
-          runId: context.runId,
-          toolName,
-          persistError,
-        });
+      const argsHash = buildToolArgsHash(input);
+      const identity = {
+        rootRunId: context.rootRunId ?? context.runId,
+        toolName,
+        argsHash,
+      };
+      const [reusable, retryCount] = await Promise.all([
+        db.findReusableAgentToolInvocation(identity),
+        db.getAgentToolInvocationRetryCount(identity),
+      ]);
+      const invocation = await db.startAgentToolInvocation({
+        ...identity,
+        runId: context.runId,
+        toolCallId: details?.toolCall?.callId ?? randomUUID(),
+        idempotencyKey,
+        args: input,
+        retryCount,
       });
-    await emitToolResult(context, toolName, {
-      success: false,
-      error: toolError(error),
-      errorType,
-    }).catch(() => undefined);
-    throw error;
-  }
-};
+      span.setAttribute("agent.tool.retry_count", retryCount);
+
+      if (reusable) {
+        span.setAttribute("agent.tool.replayed", true);
+        const result = reusable.result as TResult;
+        await db.completeAgentToolInvocation({
+          id: invocation.id,
+          result,
+          status: "skipped",
+          replayedFromInvocationId: reusable.id,
+        });
+        await emitToolResult(
+          context,
+          toolName,
+          addReplayMetadata(summarize(result), reusable.runId)
+        );
+        return result;
+      }
+
+      try {
+        const result = await execute();
+        await db.completeAgentToolInvocation({ id: invocation.id, result });
+        await emitToolResult(context, toolName, summarize(result));
+        return result;
+      } catch (error) {
+        const errorType = classifyAgentToolError(error);
+        span.setAttribute("error.type", errorType);
+        await db
+          .failAgentToolInvocation({
+            id: invocation.id,
+            error: toolError(error),
+            errorType,
+            status: errorType === "unknown" ? "unknown" : "failed",
+          })
+          .catch(persistError => {
+            console.error("[Agent] Failed to persist tool failure", {
+              runId: context.runId,
+              toolName,
+              persistError,
+            });
+          });
+        await emitToolResult(context, toolName, {
+          success: false,
+          error: toolError(error),
+          errorType,
+        }).catch(() => undefined);
+        throw error;
+      }
+    }
+  );
 
 const toolError = (error: unknown) =>
   error instanceof Error ? error.message : "工具执行失败";
@@ -745,6 +768,49 @@ const getRunMetrics = (startedAt: number, events: AgentEvent[]) => ({
   toolCallCount: events.filter(event => event.type === "tool_call").length,
   toolResultCount: events.filter(event => event.type === "tool_result").length,
 });
+
+type AgentSdkUsage = {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+export type AgentRunStats = {
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  llmRequestCount: number;
+  contextWindowTokens: number;
+  traceId: string | null;
+  spanId: string | null;
+};
+
+const buildAgentRunStats = async (
+  runId: string,
+  usage?: AgentSdkUsage,
+  completedAt = new Date()
+): Promise<AgentRunStats> => {
+  const [runRecord, telemetry] = await Promise.all([
+    db.getAgentRunById(runId),
+    Promise.resolve(getActiveTraceContext()),
+  ]);
+  const createdAt = runRecord?.createdAt
+    ? new Date(runRecord.createdAt).getTime()
+    : completedAt.getTime();
+
+  return {
+    durationMs: Math.max(0, completedAt.getTime() - createdAt),
+    inputTokens: usage?.inputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    totalTokens: usage?.totalTokens ?? 0,
+    llmRequestCount: usage?.requests ?? 0,
+    contextWindowTokens: ENV.openAiContextWindowTokens,
+    traceId: telemetry?.traceId ?? runRecord?.traceId ?? null,
+    spanId: telemetry?.spanId ?? runRecord?.spanId ?? null,
+  };
+};
 
 export const agentTools = [
   tool({
@@ -1144,6 +1210,8 @@ export async function createAgentChatResponse(input: {
       assistantContent: guardrail.message,
       events: [],
     });
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(runId, undefined, completedAt);
     await db.saveChatMessage({
       ticketId: input.ticketId,
       userId: input.userId,
@@ -1155,10 +1223,13 @@ export async function createAgentChatResponse(input: {
     });
     await db.updateAgentRun(runId, {
       finalOutput: guardrail.message,
+      completedAt,
+      ...runStats,
       metadata: {
         mode: "non_stream",
         guardrail: guardrail.code,
         structuredOutput,
+        usage: runStats,
       },
     });
 
@@ -1172,6 +1243,7 @@ export async function createAgentChatResponse(input: {
       events: [{ type: "final", content: guardrail.message, runId }],
       structuredOutput,
       retrieval: null,
+      runStats,
     };
   }
 
@@ -1191,7 +1263,11 @@ export async function createAgentChatResponse(input: {
         llmProvider: "openai-agents",
         llmModel: ENV.openAiModel,
         retryOfRunId: input.retryOfRunId,
-        metadata: { mode: "non_stream" },
+        traceId: getActiveTraceContext()?.traceId,
+        metadata: {
+          mode: "non_stream",
+          telemetry: getActiveTraceContext(),
+        },
       })
     ).id;
   const rootRunId = await db.getAgentRunRootId(runId);
@@ -1206,7 +1282,10 @@ export async function createAgentChatResponse(input: {
   });
 
   try {
-    await db.updateAgentRun(runId, { status: "planning" });
+    await db.updateAgentRun(runId, {
+      status: "planning",
+      startedAt: new Date(),
+    });
     const thinkingEvent: AgentEvent = {
       type: "thinking",
       message: "Agent 正在分析问题",
@@ -1257,6 +1336,12 @@ export async function createAgentChatResponse(input: {
     });
     const handoffEvaluation = evaluateAgentHandoff(structuredOutput);
     const metrics = getRunMetrics(startedAt, events);
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(
+      runId,
+      result.runContext.usage,
+      completedAt
+    );
     await db.saveChatMessage({
       ticketId: input.ticketId,
       userId: input.userId,
@@ -1273,13 +1358,15 @@ export async function createAgentChatResponse(input: {
       finalOutput: assistantContent,
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
-      completedAt: new Date(),
+      completedAt,
+      ...runStats,
       metadata: {
         ...getAgentRunMetadata(runId, "non_stream", {
           structuredOutput,
           retrieval,
           handoffEvaluation,
           metrics,
+          usage: runStats,
         }),
       },
     });
@@ -1294,9 +1381,12 @@ export async function createAgentChatResponse(input: {
       events,
       structuredOutput,
       retrieval,
+      runStats,
     };
   } catch (error) {
     const message = toolError(error);
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(runId, undefined, completedAt);
     await db.addAgentRunStep({
       runId,
       stepType: "error",
@@ -1305,7 +1395,8 @@ export async function createAgentChatResponse(input: {
     await db.updateAgentRun(runId, {
       status: "failed",
       error: message,
-      completedAt: new Date(),
+      completedAt,
+      ...runStats,
     });
     throw error;
   }
@@ -1378,6 +1469,8 @@ export async function streamAgentChatResponse(
       assistantContent: guardrail.message,
       events: [finalEvent],
     });
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(runId, undefined, completedAt);
     await db.saveChatMessage({
       ticketId: input.ticketId,
       userId: input.userId,
@@ -1389,10 +1482,13 @@ export async function streamAgentChatResponse(
     });
     await db.updateAgentRun(runId, {
       finalOutput: guardrail.message,
+      completedAt,
+      ...runStats,
       metadata: {
         mode: "stream",
         guardrail: guardrail.code,
         structuredOutput,
+        usage: runStats,
       },
     });
     return {
@@ -1401,6 +1497,7 @@ export async function streamAgentChatResponse(
       relatedKnowledgeSnapshot: [],
       structuredOutput,
       retrieval: null,
+      runStats,
     };
   }
 
@@ -1421,7 +1518,11 @@ export async function streamAgentChatResponse(
         llmProvider: "openai-agents",
         llmModel: ENV.openAiModel,
         retryOfRunId: input.retryOfRunId,
-        metadata: { mode: "stream" },
+        traceId: getActiveTraceContext()?.traceId,
+        metadata: {
+          mode: "stream",
+          telemetry: getActiveTraceContext(),
+        },
       })
     ).id;
   const rootRunId = await db.getAgentRunRootId(runId);
@@ -1442,7 +1543,7 @@ export async function streamAgentChatResponse(
   try {
     const planningUpdate = await db.updateAgentRun(
       runId,
-      { status: "planning" },
+      { status: "planning", startedAt: new Date() },
       input.executionFence
     );
     if (input.executionFence && planningUpdate.length === 0) {
@@ -1541,11 +1642,18 @@ export async function streamAgentChatResponse(
     });
     const handoffEvaluation = evaluateAgentHandoff(structuredOutput);
     const metrics = getRunMetrics(startedAt, events);
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(
+      runId,
+      result.runContext.usage,
+      completedAt
+    );
     const metadata = getAgentRunMetadata(runId, "stream", {
       structuredOutput,
       retrieval,
       handoffEvaluation,
       metrics,
+      usage: runStats,
     });
 
     if (input.executionFence) {
@@ -1559,6 +1667,7 @@ export async function streamAgentChatResponse(
         relatedKnowledgeSnapshot,
         llmProvider: "openai-agents",
         llmModel: ENV.openAiModel,
+        ...runStats,
         metadata,
       });
       if (!completed) {
@@ -1581,7 +1690,8 @@ export async function streamAgentChatResponse(
         finalOutput: assistantContent,
         llmProvider: "openai-agents",
         llmModel: ENV.openAiModel,
-        completedAt: new Date(),
+        completedAt,
+        ...runStats,
         metadata,
       });
     }
@@ -1592,9 +1702,12 @@ export async function streamAgentChatResponse(
       relatedKnowledgeSnapshot,
       structuredOutput,
       retrieval,
+      runStats,
     };
   } catch (error) {
     const message = toolError(error);
+    const completedAt = new Date();
+    const runStats = await buildAgentRunStats(runId, undefined, completedAt);
     await db.addAgentRunStep({
       runId,
       stepType: "error",
@@ -1605,7 +1718,8 @@ export async function streamAgentChatResponse(
       {
         status: "failed",
         error: message,
-        completedAt: new Date(),
+        completedAt,
+        ...runStats,
       },
       input.executionFence
     );

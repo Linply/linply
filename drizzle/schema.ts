@@ -343,6 +343,15 @@ export const agentRuns = pgTable(
     leaseOwner: varchar("leaseOwner", { length: 128 }),
     leaseExpiresAt: timestamp("leaseExpiresAt", { withTimezone: true }),
     heartbeatAt: timestamp("heartbeatAt", { withTimezone: true }),
+    traceId: varchar("traceId", { length: 32 }),
+    spanId: varchar("spanId", { length: 16 }),
+    startedAt: timestamp("startedAt", { withTimezone: true }),
+    durationMs: integer("durationMs"),
+    inputTokens: integer("inputTokens"),
+    outputTokens: integer("outputTokens"),
+    totalTokens: integer("totalTokens"),
+    llmRequestCount: integer("llmRequestCount"),
+    contextWindowTokens: integer("contextWindowTokens"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
@@ -360,6 +369,7 @@ export const agentRuns = pgTable(
       table.status,
       table.leaseExpiresAt
     ),
+    traceIdIdx: index("idx_agent_runs_traceId").on(table.traceId),
     retryOfRunIdIdx: index("idx_agent_runs_retryOfRunId").on(
       table.retryOfRunId
     ),

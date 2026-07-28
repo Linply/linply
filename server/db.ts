@@ -1190,6 +1190,8 @@ export async function createAgentRun(data: {
   llmProvider?: string;
   llmModel?: string;
   retryOfRunId?: string;
+  traceId?: string;
+  spanId?: string;
   metadata?: Record<string, unknown>;
 }) {
   const db = await getDb();
@@ -1205,6 +1207,8 @@ export async function createAgentRun(data: {
       llmProvider: data.llmProvider,
       llmModel: data.llmModel,
       retryOfRunId: data.retryOfRunId,
+      traceId: data.traceId,
+      spanId: data.spanId,
       metadata: data.metadata
         ? (JSON.stringify(data.metadata) as any)
         : undefined,
@@ -1223,6 +1227,15 @@ export async function updateAgentRun(
     llmProvider: string | null;
     llmModel: string | null;
     completedAt: Date | null;
+    startedAt: Date | null;
+    durationMs: number | null;
+    traceId: string | null;
+    spanId: string | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    llmRequestCount: number | null;
+    contextWindowTokens: number | null;
     metadata: Record<string, unknown> | null;
   }>,
   executionFence?: AgentRunExecutionFence
@@ -1314,6 +1327,31 @@ export async function getAgentRunWithSteps(id: string) {
   };
 }
 
+export async function getAgentRunSummaries(ids: string[]) {
+  if (ids.length === 0) return [];
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select({
+      id: agentRuns.id,
+      status: agentRuns.status,
+      llmProvider: agentRuns.llmProvider,
+      llmModel: agentRuns.llmModel,
+      traceId: agentRuns.traceId,
+      durationMs: agentRuns.durationMs,
+      inputTokens: agentRuns.inputTokens,
+      outputTokens: agentRuns.outputTokens,
+      totalTokens: agentRuns.totalTokens,
+      llmRequestCount: agentRuns.llmRequestCount,
+      contextWindowTokens: agentRuns.contextWindowTokens,
+      createdAt: agentRuns.createdAt,
+      completedAt: agentRuns.completedAt,
+    })
+    .from(agentRuns)
+    .where(inArray(agentRuns.id, ids));
+}
+
 export async function getAgentRunRootId(runId: string) {
   let currentId = runId;
   const visited = new Set<string>();
@@ -1351,6 +1389,14 @@ export async function completeAgentRunWithMessage(data: {
   }>;
   llmProvider: string;
   llmModel: string;
+  traceId?: string | null;
+  spanId?: string | null;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  llmRequestCount: number;
+  contextWindowTokens: number;
   metadata: Record<string, unknown>;
 }) {
   const db = await getDb();
@@ -1395,6 +1441,14 @@ export async function completeAgentRunWithMessage(data: {
         error: null,
         llmProvider: data.llmProvider,
         llmModel: data.llmModel,
+        traceId: data.traceId,
+        spanId: data.spanId,
+        durationMs: data.durationMs,
+        inputTokens: data.inputTokens,
+        outputTokens: data.outputTokens,
+        totalTokens: data.totalTokens,
+        llmRequestCount: data.llmRequestCount,
+        contextWindowTokens: data.contextWindowTokens,
         completedAt: new Date(),
         metadata: JSON.stringify(data.metadata) as any,
         updatedAt: new Date(),

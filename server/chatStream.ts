@@ -5,6 +5,7 @@ import type { KnowledgeRetrieval } from "./db";
 import { getTicketForUser } from "./accessControl";
 import {
   type AgentEvent,
+  type AgentRunStats,
   type StructuredAgentOutput,
 } from "./agentService";
 import {
@@ -29,8 +30,19 @@ type SsePayload =
       event: AgentEvent;
       attemptCount?: number;
     }
-  | { type: "done"; llmProvider: string; llmModel?: string; attemptCount?: number }
-  | { type: "error"; message: string; attemptCount?: number };
+  | {
+      type: "done";
+      llmProvider: string;
+      llmModel?: string;
+      stats?: AgentRunStats;
+      attemptCount?: number;
+    }
+  | {
+      type: "error";
+      message: string;
+      stats?: Partial<AgentRunStats>;
+      attemptCount?: number;
+    };
 
 const writeSse = (res: Response, payload: SsePayload, eventId?: number) => {
   if (eventId !== undefined) res.write(`id: ${eventId}\n`);
@@ -95,6 +107,16 @@ const streamAgentRunEvents = async (
         type: "done",
         llmProvider: currentRun.llmProvider ?? "openai-agents",
         llmModel: currentRun.llmModel ?? undefined,
+        stats: {
+          durationMs: currentRun.durationMs ?? 0,
+          inputTokens: currentRun.inputTokens ?? 0,
+          outputTokens: currentRun.outputTokens ?? 0,
+          totalTokens: currentRun.totalTokens ?? 0,
+          llmRequestCount: currentRun.llmRequestCount ?? 0,
+          contextWindowTokens: currentRun.contextWindowTokens ?? 0,
+          traceId: currentRun.traceId,
+          spanId: currentRun.spanId,
+        },
       });
       return;
     }

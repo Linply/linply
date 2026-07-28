@@ -4,6 +4,7 @@ import type { TrpcContext } from "./_core/context";
 vi.mock("./db", () => ({
   addTicketNote: vi.fn(),
   getAgentRunById: vi.fn(),
+  getAgentRunSummaries: vi.fn(),
   getAgentRunWithSteps: vi.fn(),
   getChatHistory: vi.fn(),
   getKnowledgeByIds: vi.fn(),
@@ -82,6 +83,7 @@ describe("user resource isolation", () => {
       steps: [],
     });
     mockedDb.getAgentRunById.mockResolvedValue(runB);
+    mockedDb.getAgentRunSummaries.mockResolvedValue([]);
   });
 
   it("rejects A from every ticket and chat history endpoint for B's ticket", async () => {
@@ -135,6 +137,7 @@ describe("user resource isolation", () => {
     await expect(caller.chat.getHistory({})).resolves.toEqual([]);
 
     expect(mockedDb.getChatHistory).toHaveBeenCalledWith(userA.id, undefined, 50);
+    expect(mockedDb.getAgentRunSummaries).toHaveBeenCalledWith([]);
   });
 
   it("rejects A from B's Agent Run detail and retry endpoints", async () => {

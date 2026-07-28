@@ -14,10 +14,23 @@ export const ENV = {
   agentWorkerPollMs: Number(process.env.AGENT_WORKER_POLL_MS ?? 500),
   agentWorkerLeaseMs: Number(process.env.AGENT_WORKER_LEASE_MS ?? 60_000),
   agentWorkerMaxAttempts: Number(process.env.AGENT_WORKER_MAX_ATTEMPTS ?? 3),
+  otelEnabled:
+    process.env.OTEL_ENABLED === "true" ||
+    (process.env.OTEL_ENABLED === undefined &&
+      Boolean(
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      )),
+  otelServiceNamespace:
+    process.env.OTEL_SERVICE_NAMESPACE ?? "customer-service-agent",
   isProduction: process.env.NODE_ENV === "production",
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-5.5",
+  openAiContextWindowTokens: Math.max(
+    0,
+    Number(process.env.OPENAI_CONTEXT_WINDOW_TOKENS ?? 272_000)
+  ),
   openAiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   openAiEmbeddingBaseUrl:
     process.env.OPENAI_EMBEDDING_BASE_URL ??

@@ -15,6 +15,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,9 +29,11 @@ import { trpc } from "@/lib/trpc";
 import {
   AlertCircle,
   Bot,
+  Clock3,
   ClipboardList,
   Copy,
   ExternalLink,
+  MoreHorizontal,
   RefreshCcw,
   Send,
 } from "lucide-react";
@@ -53,6 +62,17 @@ type RetrievalStatus = {
   fallbackReason?: string | null;
 };
 
+type MessageRunStats = {
+  durationMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  llmRequestCount: number;
+  contextWindowTokens: number;
+  llmModel?: string | null;
+  traceId?: string | null;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -66,6 +86,7 @@ type ChatMessage = {
   retrieval?: RetrievalStatus | null;
   error?: string;
   sourcePrompt?: string;
+  runStats?: MessageRunStats | null;
 };
 
 type ChatStreamItem =
@@ -147,6 +168,27 @@ const trimText = (value: string, maxLength: number) => {
   const compact = value.replace(/\s+/g, " ").trim();
   if (compact.length <= maxLength) return compact;
   return `${compact.slice(0, maxLength - 1)}…`;
+};
+
+const formatDuration = (durationMs?: number | null) => {
+  if (typeof durationMs !== "number") return "未记录";
+  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const totalSeconds = Math.round(durationMs / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+};
+
+const formatTokens = (tokens?: number | null) =>
+  new Intl.NumberFormat("zh-CN", {
+    notation: tokens && tokens >= 1_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(tokens ?? 0);
+
+const getContextUsagePercent = (stats?: MessageRunStats | null) => {
+  if (!stats?.contextWindowTokens) return 0;
+  return Math.min(100, (stats.totalTokens / stats.contextWindowTokens) * 100);
 };
 
 const getPreviousUserPrompt = (messages: ChatMessage[], messageId: string) => {
@@ -266,6 +308,18 @@ export default function SmartChat() {
       content: msg.content,
       relatedKnowledge: msg.relatedKnowledge ?? [],
       runId: msg.agentRunId ?? undefined,
+      runStats: msg.runStats
+        ? {
+            durationMs: msg.runStats.durationMs ?? null,
+            inputTokens: msg.runStats.inputTokens ?? 0,
+            outputTokens: msg.runStats.outputTokens ?? 0,
+            totalTokens: msg.runStats.totalTokens ?? 0,
+            llmRequestCount: msg.runStats.llmRequestCount ?? 0,
+            contextWindowTokens: msg.runStats.contextWindowTokens ?? 0,
+            llmModel: msg.runStats.llmModel ?? msg.llmModel,
+            traceId: msg.runStats.traceId,
+          }
+        : null,
     }));
 
     setMessages(previousMessages =>
@@ -288,6 +342,8 @@ export default function SmartChat() {
               structuredOutput: liveMessage.structuredOutput,
               retrieval: liveMessage.retrieval,
               sourcePrompt: liveMessage.sourcePrompt,
+              runStats: historyMessage.runStats ?? liveMessage.runStats,
+              isStreaming: false,
             }
           : historyMessage;
       })
@@ -509,6 +565,12 @@ export default function SmartChat() {
           updateAssistant(assistantId, message => ({
             ...message,
             isStreaming: false,
+            runStats: payload.stats
+              ? {
+                  ...payload.stats,
+                  llmModel: payload.llmModel ?? message.runStats?.llmModel,
+                }
+              : message.runStats,
           }));
           return;
         }
@@ -587,6 +649,16 @@ export default function SmartChat() {
       updateAssistant(assistantId, message => ({
         ...message,
         isStreaming: false,
+        runStats:
+          message.runStats ??
+          ({
+            durationMs: Date.now() - now,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            llmRequestCount: 0,
+            contextWindowTokens: 0,
+          } satisfies MessageRunStats),
       }));
       await utils.chat.getHistory.invalidate();
     } catch (error: any) {
@@ -594,6 +666,16 @@ export default function SmartChat() {
         ...message,
         isStreaming: false,
         error: error?.message || "发送消息失败，请稍后重试",
+        runStats:
+          message.runStats ??
+          ({
+            durationMs: Date.now() - now,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            llmRequestCount: 0,
+            contextWindowTokens: 0,
+          } satisfies MessageRunStats),
       }));
       toast.error(error?.message || "发送消息失败，请稍后重试");
     } finally {
@@ -824,28 +906,102 @@ export default function SmartChat() {
                     ) : null}
 
                     {message.role === "assistant" && message.runId ? (
-                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
-                        <span>Agent Run</span>
-                        <code className="max-w-full truncate font-mono">
-                          {message.runId}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => copyRunId(message.runId!)}
-                          aria-label="复制 Run ID"
-                          title="复制 Run ID"
-                          className="rounded-sm p-0.5 hover:bg-gray-100 hover:text-gray-600"
-                        >
-                          <Copy className="size-2.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setLocation(`/runs/${message.runId}`)}
-                          className="inline-flex items-center gap-0.5 hover:text-gray-600 hover:underline"
-                        >
-                          详情
-                          <ExternalLink className="size-2.5" />
-                        </button>
+                      <div className="mt-4 flex h-9 items-center justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
+                        <span className="inline-flex items-center gap-1.5 tabular-nums">
+                          <Clock3 className="size-4" />
+                          {message.isStreaming
+                            ? "运行中"
+                            : formatDuration(message.runStats?.durationMs)}
+                        </span>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="查看运行统计"
+                              title="查看运行统计"
+                              className="flex size-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            sideOffset={8}
+                            className="w-[min(22rem,calc(100vw-2rem))] p-0"
+                          >
+                            <div className="space-y-3 px-4 py-4 text-sm">
+                              <div className="flex items-start justify-between gap-4">
+                                <span className="text-gray-500">模型</span>
+                                <span className="min-w-0 break-all text-right font-mono text-xs font-medium text-gray-900">
+                                  {message.runStats?.llmModel ?? "未记录"}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-gray-500">模型请求</span>
+                                <span className="font-medium tabular-nums text-gray-900">
+                                  {message.runStats?.llmRequestCount ?? 0} 次
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-3 border-y border-gray-100 py-3 text-center">
+                                <div>
+                                  <p className="text-[11px] text-gray-400">输入</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.inputTokens)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[11px] text-gray-400">输出</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.outputTokens)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[11px] text-gray-400">总计</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.totalTokens)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div>
+                                <div className="flex items-center justify-between gap-4">
+                                  <span className="text-gray-500">用量 / 上下文窗口</span>
+                                  <span className="font-medium tabular-nums text-gray-900">
+                                    {getContextUsagePercent(message.runStats).toFixed(1)}%{` `}
+                                    <span className="font-normal text-gray-400">
+                                      ({formatTokens(message.runStats?.totalTokens)} /{` `}
+                                      {formatTokens(message.runStats?.contextWindowTokens)})
+                                    </span>
+                                  </span>
+                                </div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-gray-100">
+                                  <div
+                                    className="h-full bg-emerald-500"
+                                    style={{
+                                      width: `${getContextUsagePercent(message.runStats)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                            <DropdownMenuSeparator className="m-0" />
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                setLocation(`/runs/${message.runId}`)
+                              }
+                              className="mx-1 my-1"
+                            >
+                              <ExternalLink className="size-4" />
+                              查看完整 Run
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => copyRunId(message.runId!)}
+                              className="mx-1 mb-1"
+                            >
+                              <Copy className="size-4" />
+                              复制 Run ID
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     ) : null}
 
