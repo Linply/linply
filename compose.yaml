@@ -19,6 +19,18 @@ services:
       retries: 10
       start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    container_name: customer_service_agent_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
     platform: linux/amd64

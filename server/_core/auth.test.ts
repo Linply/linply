@@ -10,9 +10,16 @@ vi.mock("../db", () => ({
   updateUserLastSignedIn: vi.fn(),
 }));
 
+vi.mock("./sessionCache", () => ({
+  cacheSession: vi.fn(),
+  getCachedSession: vi.fn(),
+  markSessionRevoked: vi.fn(),
+}));
+
 import { COOKIE_NAME, SESSION_DURATION_MS } from "../../shared/const";
 import * as db from "../db";
 import {
+  authenticateRequest,
   hashPassword,
   hashSessionToken,
   normalizeEmail,
@@ -20,8 +27,38 @@ import {
   revokeRequestSession,
   verifyPassword,
 } from "./auth";
+import * as sessionCache from "./sessionCache";
 
 const mockedDb = vi.mocked(db);
+const mockedSessionCache = vi.mocked(sessionCache);
+
+const createUser = () => ({
+  id: 8,
+  name: "测试用户",
+  email: "user@example.com",
+  role: "user" as const,
+  avatarUrl: null,
+  emailVerifiedAt: null,
+  disabledAt: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  lastSignedIn: new Date(),
+});
+
+const createSessionResult = (lastSeenAt = new Date()) => ({
+  session: {
+    id: 12,
+    userId: 8,
+    tokenHash: hashSessionToken("raw-session-token"),
+    expiresAt: new Date(Date.now() + 60_000),
+    revokedAt: null,
+    ipAddress: null,
+    userAgent: null,
+    createdAt: new Date(),
+    lastSeenAt,
+  },
+  user: createUser(),
+});
 
 const createRequest = (cookie?: string) => ({
   headers: cookie ? { cookie } : {},
@@ -40,6 +77,10 @@ const createResponse = () => ({
 describe("password authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedSessionCache.getCachedSession.mockResolvedValue({ status: "miss" });
+    mockedSessionCache.cacheSession.mockResolvedValue(undefined);
+    mockedSessionCache.markSessionRevoked.mockResolvedValue(undefined);
+    mockedDb.touchSession.mockResolvedValue(undefined);
   });
 
   it("normalizes emails and verifies scrypt password hashes", async () => {
@@ -92,12 +133,62 @@ describe("password authentication", () => {
     expect(mockedDb.createSession.mock.calls[0]?.[0].tokenHash).not.toBe(rawToken);
   });
 
-  it("revokes the database session represented by the request cookie", async () => {
+  it("uses a cached session without querying PostgreSQL", async () => {
+    const result = createSessionResult();
+    mockedSessionCache.getCachedSession.mockResolvedValue({
+      status: "hit",
+      value: result,
+    });
+
+    await expect(authenticateRequest(
+      createRequest(`${COOKIE_NAME}=raw-session-token`)
+    )).resolves.toEqual(result.user);
+
+    expect(mockedDb.getActiveSessionWithUser).not.toHaveBeenCalled();
+    expect(mockedSessionCache.cacheSession).not.toHaveBeenCalled();
+  });
+
+  it("falls back to PostgreSQL and fills the cache on a miss", async () => {
+    const result = createSessionResult(new Date(Date.now() - 16 * 60_000));
+    mockedDb.getActiveSessionWithUser.mockResolvedValue(result);
+
+    await expect(authenticateRequest(
+      createRequest(`${COOKIE_NAME}=raw-session-token`)
+    )).resolves.toEqual(result.user);
+
+    const tokenHash = hashSessionToken("raw-session-token");
+    expect(mockedDb.getActiveSessionWithUser).toHaveBeenCalledWith(tokenHash);
+    expect(mockedSessionCache.cacheSession).toHaveBeenCalledWith(tokenHash, result);
+    expect(mockedDb.touchSession).toHaveBeenCalledWith(result.session.id);
+  });
+
+  it("rejects a revoked cache tombstone without querying PostgreSQL", async () => {
+    mockedSessionCache.getCachedSession.mockResolvedValue({ status: "revoked" });
+
+    await expect(authenticateRequest(
+      createRequest(`${COOKIE_NAME}=raw-session-token`)
+    )).rejects.toThrow("Invalid session");
+    expect(mockedDb.getActiveSessionWithUser).not.toHaveBeenCalled();
+  });
+
+  it("does not cache an invalid database session", async () => {
+    mockedDb.getActiveSessionWithUser.mockResolvedValue(undefined);
+
+    await expect(authenticateRequest(
+      createRequest(`${COOKIE_NAME}=raw-session-token`)
+    )).rejects.toThrow("Invalid session");
+    expect(mockedSessionCache.cacheSession).not.toHaveBeenCalled();
+  });
+
+  it("revokes PostgreSQL before recording a cache tombstone", async () => {
     mockedDb.revokeSession.mockResolvedValue(undefined);
     await revokeRequestSession(createRequest(`${COOKIE_NAME}=raw-session-token`));
 
-    expect(mockedDb.revokeSession).toHaveBeenCalledWith(
-      hashSessionToken("raw-session-token")
+    const tokenHash = hashSessionToken("raw-session-token");
+    expect(mockedDb.revokeSession).toHaveBeenCalledWith(tokenHash);
+    expect(mockedSessionCache.markSessionRevoked).toHaveBeenCalledWith(tokenHash);
+    expect(mockedDb.revokeSession.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedSessionCache.markSessionRevoked.mock.invocationCallOrder[0]!
     );
   });
 });

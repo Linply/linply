@@ -7,7 +7,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 - 前端：React 19、Tailwind CSS 4、shadcn/ui、wouter
 - 数据与接口：tRPC 11、React Query
 - 后端：Express 4、OpenAI Agents SDK
-- 数据库：PostgreSQL 16 + pgvector、Drizzle ORM
+- 数据库与缓存：PostgreSQL 16 + pgvector、Drizzle ORM；Redis 登录 Session 短时缓存
 - 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
 - LLM：OpenAI Agents SDK
 - 认证：邮箱密码 + Google OAuth、数据库 Session、用户与管理员权限隔离
@@ -24,7 +24,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 
 ```bash
 pnpm install
-docker compose up -d postgres embeddings
+docker compose up -d postgres redis embeddings
 pnpm db:migrate
 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='replace-me' pnpm auth:create-admin
 pnpm db:seed
@@ -36,6 +36,7 @@ pnpm dev
 
 - 应用：http://localhost:3000
 - PostgreSQL：localhost:5432
+- Redis：localhost:6379（可选；未配置时认证直接查询 PostgreSQL）
 - 本地 embedding 服务：http://localhost:8080
 
 账号入口：
@@ -56,6 +57,8 @@ cp .env.example .env
 关键配置：
 
 - `DATABASE_URL`：PostgreSQL 连接串。
+- `REDIS_URL`：可选的登录 Session 缓存连接串；缺失或 Redis 故障时自动回退 PostgreSQL。
+- `SESSION_CACHE_TTL_MS=60000`：认证用户与权限快照的短 TTL，上限 5 分钟，不改变数据库中的 30 天绝对 Session 到期时间。角色降权或禁用用户时应同时撤销其 Session，而不是依赖 TTL 自然过期。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：仅在运行管理员初始化命令时使用。
 - `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD`：可选，仅用于登录页的管理员演示入口；账号必须已通过 `pnpm auth:create-admin` 初始化并具有管理员角色。
 - `APP_BASE_URL`：应用公网 origin，用于生成 OAuth callback。
@@ -155,10 +158,11 @@ Service: agent-worker
 Shared config: /railway.json
 Start command: pnpm railway:start（按 RAILWAY_SERVICE_NAME 选择 Web 或 worker）
 DATABASE_URL: ${{Postgres.DATABASE_URL}}
+REDIS_URL: ${{Redis.REDIS_URL}}
 LOCAL_EMBEDDING_BASE_URL: ${{app.APP_BASE_URL}}
 ```
 
-worker 还需与 app 使用相同的 `OPENAI_*` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
+worker 还需与 app 使用相同的 `OPENAI_*` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Redis 只用于 Web 登录认证缓存，因此 `REDIS_URL` 仅需配置在 app Web 服务，Worker 不需要。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
 worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，但不配置公网域名。
 
 `LOCAL_EMBEDDING_API_KEY` 在 Railway 中已设置为服务内 token。公网直接访问 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。

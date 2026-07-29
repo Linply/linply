@@ -1,3 +1,15 @@
+const boundedNumber = (
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+) => {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed)
+    ? Math.min(maximum, Math.max(minimum, parsed))
+    : fallback;
+};
+
 export const ENV = {
   databaseUrl: process.env.DATABASE_URL ?? "",
   appBaseUrl:
@@ -7,6 +19,25 @@ export const ENV = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
   demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
+  redisUrl: process.env.REDIS_URL ?? "",
+  sessionCacheTtlMs: boundedNumber(
+    process.env.SESSION_CACHE_TTL_MS,
+    60_000,
+    1_000,
+    5 * 60_000
+  ),
+  sessionCacheConnectTimeoutMs: boundedNumber(
+    process.env.SESSION_CACHE_CONNECT_TIMEOUT_MS,
+    1_000,
+    100,
+    10_000
+  ),
+  sessionCacheCommandTimeoutMs: boundedNumber(
+    process.env.SESSION_CACHE_COMMAND_TIMEOUT_MS,
+    250,
+    50,
+    5_000
+  ),
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",
   agentExecutionMode:

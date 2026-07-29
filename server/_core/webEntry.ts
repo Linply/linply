@@ -1,12 +1,22 @@
 import "dotenv/config";
+import { closeSessionCache } from "./sessionCache";
 import { shutdownTelemetry, startTelemetry } from "./telemetry";
 
 async function bootstrap() {
   startTelemetry("web");
 
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = () => {
+    shutdownPromise ??= Promise.allSettled([
+      closeSessionCache(),
+      shutdownTelemetry(),
+    ]).then(() => undefined);
+    return shutdownPromise;
+  };
+
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, () => {
-      void shutdownTelemetry();
+      void shutdown();
     });
   }
 

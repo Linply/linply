@@ -3,6 +3,8 @@
 ## 关键环境变量
 
 - `DATABASE_URL`：生产 PostgreSQL + pgvector 连接串。上线前执行 `pnpm db:migrate`。
+- `REDIS_URL`：可选的 Web 登录 Session 缓存；Redis 故障时回退 PostgreSQL。Railway 可使用 `${{Redis.REDIS_URL}}` 引用 Redis Service。
+- `SESSION_CACHE_TTL_MS`：认证/角色快照 TTL，默认 60 秒且代码限制不超过 5 分钟；不改变 30 天绝对 Session 到期。禁用或降权用户时必须撤销 Session 并失效缓存。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：只用于首次运行 `pnpm auth:create-admin`，不要提交真实值。
 - `APP_BASE_URL`：应用的 HTTPS origin，用于生成 Google OAuth callback。
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证。
@@ -14,11 +16,12 @@
 
 1. 安装依赖并构建：`pnpm install --frozen-lockfile && pnpm build`。
 2. 准备数据库：安装 pgvector，设置 `DATABASE_URL`，执行 `pnpm db:migrate`。
-3. 配置 OpenAI 兼容模型和 embedding 服务。
-4. 在 Google Cloud Console 配置 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-5. 回填知识库向量：`pnpm kb:embed`。
-6. 启动服务：`NODE_ENV=production pnpm start`。
-7. 用管理员账号检查登录、知识库、RAG 调试页、智能客服和 Agent Run 详情页。
+3. 可选创建 Redis Service，并只给 Web 服务设置 `REDIS_URL`；不配置时继续使用 PostgreSQL Session 查询。
+4. 配置 OpenAI 兼容模型和 embedding 服务。
+5. 在 Google Cloud Console 配置 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
+6. 回填知识库向量：`pnpm kb:embed`。
+7. 启动服务：`NODE_ENV=production pnpm start`。
+8. 用管理员账号检查登录、知识库、RAG 调试页、智能客服和 Agent Run 详情页。
 
 ## 上线检查
 
