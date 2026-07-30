@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "NODE_ENV=development tsx watch server/_core/webEntry.ts",
     "mcp": "tsx server/mcp/index.ts",
-    "build": "vite build && esbuild server/_core/webEntry.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.js && esbuild server/agentWorkerEntry.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/agentWorker.js",
+    "build": "vite build && esbuild server/_core/webEntry.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.js && esbuild server/agentWorkerEntry.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/agentWorker.js && esbuild server/knowledgeWorkerEntry.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/knowledgeWorker.js",
     "start": "NODE_ENV=production node dist/index.js",
     "worker": "NODE_ENV=production node dist/agentWorker.js",
     "worker:dev": "NODE_ENV=development tsx watch server/agentWorkerEntry.ts",
+    "knowledge:worker": "NODE_ENV=production node dist/knowledgeWorker.js",
+    "knowledge:worker:dev": "NODE_ENV=development tsx watch server/knowledgeWorkerEntry.ts",
     "railway:start": "NODE_ENV=production node server/railwayStart.mjs",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
@@ -20,9 +22,12 @@
     "db:seed": "node scripts/seed-data.mjs",
     "auth:create-admin": "tsx scripts/create-admin.ts",
     "kb:embed": "tsx scripts/embed-knowledge.mjs",
-    "kb:embed:check": "tsx scripts/check-openai-embedding.mjs"
+    "kb:embed:check": "tsx scripts/check-openai-embedding.mjs",
+    "kb:storage:cors": "node scripts/configure-knowledge-bucket-cors.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1097.0",
+    "@aws-sdk/s3-request-presigner": "^3.1097.0",
     "@hookform/resolvers": "^5.2.2",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/agents": "^0.11.8",
@@ -50,6 +55,7 @@
     "@trpc/react-query": "^11.6.0",
     "@trpc/server": "^11.6.0",
     "@xenova/transformers": "^2.17.2",
+    "bullmq": "^5.81.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cookie": "^1.0.2",
@@ -57,6 +63,7 @@
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.5",
     "express": "^4.21.2",
+    "ioredis": "^5.11.1",
     "lucide-react": "^0.453.0",
     "nanoid": "^5.1.5",
     "next-themes": "^0.4.6",

@@ -54,7 +54,7 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - **tickets**：工单，含状态（pending / in_progress / resolved / closed）与优先级（low / medium / high / urgent）。
 - **ticket_notes**：工单备注与状态变更记录。
 - **knowledge_base**：知识条目，含向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记（`conflictWith` / `conflictScore`）。
-- **knowledge_documents**：上传文档，记录解析状态、索引进度（`totalChunks`）等。
+- **knowledge_documents**：上传文档，记录对象存储 key、multipart 会话、文件/分片大小、解析状态与索引进度。
 - **chat_messages**：对话记录，保存引用的知识库条目快照。
 - **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
 - **agent_run_steps**：Agent 运行步骤，记录 `thinking` / `tool_call` / `tool_result` / `final` / `error`。
@@ -126,7 +126,7 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 **文档导入**
 
 - 支持 **Markdown**（按 `#` / `##` 标题切分为多条）与 **CSV**（表头 `title,content,category,keywords`）。
-- 文件以文本经 tRPC 上传，后台异步解析、入库并逐条构建向量。
+- 文件通过预签名 URL 分片直传 S3 兼容对象存储；完成后由 BullMQ 投递解析与向量化任务，独立 Knowledge Worker 流式读取文件并批量入库。
 - 页面展示**解析状态**与**索引进度**（前端轮询），完成后停止刷新。
 
 **冲突检测**

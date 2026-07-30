@@ -85,6 +85,13 @@
       "when": 1785213404623,
       "tag": "0011_silly_red_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785320524372,
+      "tag": "0012_nifty_callisto",
+      "breakpoints": true
     }
   ]
 }

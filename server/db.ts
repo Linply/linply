@@ -550,6 +550,10 @@ export async function createKnowledgeDocument(data: {
   fileType: string;
   uploadedBy?: number;
   status?: KnowledgeDocumentStatus;
+  fileSize?: number;
+  uploadPartSize?: number;
+  contentType?: string;
+  category?: string;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -561,6 +565,10 @@ export async function createKnowledgeDocument(data: {
       fileType: data.fileType,
       status: data.status ?? "parsing",
       uploadedBy: data.uploadedBy,
+      fileSize: data.fileSize,
+      uploadPartSize: data.uploadPartSize,
+      contentType: data.contentType,
+      category: data.category,
     })
     .returning({ id: knowledgeDocuments.id });
 
@@ -572,7 +580,14 @@ export async function updateKnowledgeDocument(
   data: Partial<{
     status: KnowledgeDocumentStatus;
     totalChunks: number;
+    parsedChunks: number;
+    uploadedBytes: number;
+    objectKey: string | null;
+    uploadId: string | null;
+    uploadVersion: number;
+    failureStage: string | null;
     error: string | null;
+    completedAt: Date | null;
   }>
 ) {
   const db = await getDb();
@@ -582,6 +597,28 @@ export async function updateKnowledgeDocument(
     .update(knowledgeDocuments)
     .set({ ...data, updatedAt: new Date() })
     .where(eq(knowledgeDocuments.id, id));
+}
+
+export async function updateKnowledgeDocumentStatusIfCurrent(
+  id: number,
+  currentStatus: KnowledgeDocumentStatus,
+  data: Partial<{
+    status: KnowledgeDocumentStatus;
+    failureStage: string | null;
+    error: string | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .update(knowledgeDocuments)
+    .set({ ...data, updatedAt: new Date() })
+    .where(
+      and(
+        eq(knowledgeDocuments.id, id),
+        eq(knowledgeDocuments.status, currentStatus)
+      )
+    );
 }
 
 export async function getKnowledgeDocument(id: number) {
@@ -595,6 +632,24 @@ export async function getKnowledgeDocument(id: number) {
     .limit(1);
 
   return result.length > 0 ? result[0] : null;
+}
+
+export async function listExpiredKnowledgeUploadSessions(
+  before: Date,
+  limit = 100
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select()
+    .from(knowledgeDocuments)
+    .where(
+      and(
+        eq(knowledgeDocuments.status, "uploading"),
+        lt(knowledgeDocuments.updatedAt, before)
+      )
+    )
+    .limit(limit);
 }
 
 export async function listKnowledgeDocuments() {
@@ -638,7 +693,8 @@ export async function addKnowledgeEntriesBatch(
     content: string;
     category: string;
     keywords?: string;
-  }>
+  }>,
+  embeddingStatus: "pending" | "completed" = "pending"
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -653,7 +709,7 @@ export async function addKnowledgeEntriesBatch(
         category: entry.category,
         keywords: entry.keywords,
         documentId,
-        embeddingStatus: "pending" as const,
+        embeddingStatus,
       }))
     )
     .returning({
@@ -663,6 +719,41 @@ export async function addKnowledgeEntriesBatch(
       category: knowledgeBase.category,
       keywords: knowledgeBase.keywords,
     });
+}
+
+export async function deleteKnowledgeEntriesByDocument(documentId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .delete(knowledgeBase)
+    .where(eq(knowledgeBase.documentId, documentId));
+}
+
+export async function getKnowledgeEntriesByIds(ids: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (ids.length === 0) return [];
+  return db.select().from(knowledgeBase).where(inArray(knowledgeBase.id, ids));
+}
+
+export async function getKnowledgeDocumentEmbeddingCounts(documentId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [counts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      completed:
+        sql<number>`count(*) filter (where ${knowledgeBase.embeddingStatus} = 'completed')`.mapWith(
+          Number
+        ),
+      failed:
+        sql<number>`count(*) filter (where ${knowledgeBase.embeddingStatus} = 'failed')`.mapWith(
+          Number
+        ),
+    })
+    .from(knowledgeBase)
+    .where(eq(knowledgeBase.documentId, documentId));
+  return counts ?? { total: 0, completed: 0, failed: 0 };
 }
 
 export async function setKnowledgeEntryEmbedding(

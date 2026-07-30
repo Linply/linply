@@ -20,6 +20,44 @@ export const ENV = {
   demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
   demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
+  queueRedisUrl: process.env.QUEUE_REDIS_URL ?? process.env.REDIS_URL ?? "",
+  knowledgeStorageEndpoint: process.env.AWS_ENDPOINT_URL ?? "",
+  knowledgeStorageRegion: process.env.AWS_DEFAULT_REGION ?? "auto",
+  knowledgeStorageBucket: process.env.AWS_S3_BUCKET_NAME ?? "",
+  knowledgeStorageAccessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "",
+  knowledgeStorageSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "",
+  knowledgeStorageForcePathStyle:
+    process.env.AWS_S3_FORCE_PATH_STYLE === "true",
+  knowledgeUploadPartSizeMb: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_PART_SIZE_MB,
+    16,
+    5,
+    5120
+  ),
+  knowledgeUploadUrlTtlSeconds: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_URL_TTL_SECONDS,
+    3600,
+    60,
+    86_400
+  ),
+  knowledgeUploadSessionTtlHours: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_SESSION_TTL_HOURS,
+    24,
+    1,
+    168
+  ),
+  knowledgeParseConcurrency: boundedNumber(
+    process.env.KNOWLEDGE_PARSE_CONCURRENCY,
+    1,
+    1,
+    8
+  ),
+  knowledgeEmbedConcurrency: boundedNumber(
+    process.env.KNOWLEDGE_EMBED_CONCURRENCY,
+    2,
+    1,
+    32
+  ),
   sessionCacheTtlMs: boundedNumber(
     process.env.SESSION_CACHE_TTL_MS,
     60_000,

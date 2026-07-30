@@ -14,7 +14,7 @@ import { logInfo, logWarn } from "./observability";
 
 let telemetrySdk: NodeSDK | undefined;
 
-export function startTelemetry(serviceName: "web" | "agent-worker") {
+export function startTelemetry(serviceName: "web" | "agent-worker" | "knowledge-worker") {
   if (!ENV.otelEnabled || process.env.OTEL_SDK_DISABLED === "true") {
     logInfo("[OpenTelemetry] Disabled", { serviceName });
     return;
@@ -48,6 +48,7 @@ export function startTelemetry(serviceName: "web" | "agent-worker") {
   });
 }
 
+
 export async function shutdownTelemetry() {
   if (!telemetrySdk) return;
   const sdk = telemetrySdk;
@@ -56,4 +57,3 @@ export async function shutdownTelemetry() {
     logWarn("[OpenTelemetry] Shutdown failed", { error });
   });
 }
-

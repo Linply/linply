@@ -7,7 +7,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 - 前端：React 19、Tailwind CSS 4、shadcn/ui、wouter
 - 数据与接口：tRPC 11、React Query
 - 后端：Express 4、OpenAI Agents SDK
-- 数据库与缓存：PostgreSQL 16 + pgvector、Drizzle ORM；Redis 登录 Session 短时缓存
+- 数据库、队列与存储：PostgreSQL 16 + pgvector、Drizzle ORM；Redis Session 缓存 + BullMQ；S3 兼容对象存储
 - 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
 - LLM：OpenAI Agents SDK
 - 认证：邮箱密码 + Google OAuth、数据库 Session、用户与管理员权限隔离
@@ -16,7 +16,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 
 - 工单管理：创建、筛选、搜索、详情、状态流转、备注、统计。
 - 智能客服：通过 OpenAI Agents SDK 调用知识库和工单工具，支持 SSE 流式事件与断线恢复。
-- 知识库管理：手动维护、Markdown/CSV 文档导入、embedding 回填、冲突检测。
+- 知识库管理：手动维护、Markdown/CSV multipart 分片直传、BullMQ 异步流式解析、embedding 回填、冲突检测。
 - Agent Run 排查：使用 UUID 标识运行，保存步骤、最终回答、错误和结构化结果，支持从管理员聊天回复直接查看与重试。
 - 观测与安全：记录 LLM/embedding 耗时和 token/维度元信息，日志脱敏敏感凭据。
 
@@ -24,7 +24,7 @@ AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/
 
 ```bash
 pnpm install
-docker compose up -d postgres redis embeddings
+docker compose up -d postgres redis embeddings minio minio-init
 pnpm db:migrate
 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='replace-me' pnpm auth:create-admin
 pnpm db:seed
@@ -38,6 +38,7 @@ pnpm dev
 - PostgreSQL：localhost:5432
 - Redis：localhost:6379（可选；未配置时认证直接查询 PostgreSQL）
 - 本地 embedding 服务：http://localhost:8080
+- MinIO S3 API：http://localhost:9000；管理界面：http://localhost:9001
 
 账号入口：
 
@@ -58,6 +59,9 @@ cp .env.example .env
 
 - `DATABASE_URL`：PostgreSQL 连接串。
 - `REDIS_URL`：可选的登录 Session 缓存连接串；缺失或 Redis 故障时自动回退 PostgreSQL。
+- `QUEUE_REDIS_URL`：BullMQ 连接串；初期可与 `REDIS_URL` 相同，生产高负载时建议独立 Redis。
+- `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_S3_BUCKET_NAME`：知识库原始文件对象存储。未配置时仅保留旧的 50 MB 本地兼容上传路径。
+- `KNOWLEDGE_UPLOAD_PART_SIZE_MB=16`：浏览器 multipart 分片基准大小；超大文件会自动增大分片以满足 S3 最多 10,000 片的约束。
 - `SESSION_CACHE_TTL_MS=60000`：认证用户与权限快照的短 TTL，上限 5 分钟，不改变数据库中的 30 天绝对 Session 到期时间。角色降权或禁用用户时应同时撤销其 Session，而不是依赖 TTL 自然过期。
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`：仅在运行管理员初始化命令时使用。
 - `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD`：可选，仅用于登录页的管理员演示入口；账号必须已通过 `pnpm auth:create-admin` 初始化并具有管理员角色。
@@ -87,12 +91,15 @@ pnpm build          # 生产构建
 pnpm start          # 启动生产构建
 pnpm worker         # 启动生产 Agent worker
 pnpm worker:dev     # 本地开发 Agent worker
+pnpm knowledge:worker     # 启动生产知识库 Worker
+pnpm knowledge:worker:dev # 本地开发知识库 Worker
 pnpm db:generate    # 根据 schema 生成迁移
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 初始化示例数据
 pnpm auth:create-admin # 创建或提升管理员账号
 pnpm kb:embed       # 回填知识库 embedding
 pnpm kb:embed:check # 检查 embedding 服务连通性
+pnpm kb:storage:cors # 为 APP_BASE_URL 配置 Bucket 浏览器直传 CORS
 ```
 
 ## 项目结构
@@ -165,6 +172,8 @@ LOCAL_EMBEDDING_BASE_URL: ${{app.APP_BASE_URL}}
 worker 还需与 app 使用相同的 `OPENAI_*` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Redis 只用于 Web 登录认证缓存，因此 `REDIS_URL` 仅需配置在 app Web 服务，Worker 不需要。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
 worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，但不配置公网域名。
 
+大文件知识库导入还需要 Railway Bucket 和独立 `knowledge-worker` Service。Web 与 Knowledge Worker 都配置 Bucket 的 `AWS_*` 变量和 `QUEUE_REDIS_URL=${{Redis.REDIS_URL}}`，Worker 启动命令为 `pnpm knowledge:worker`。浏览器直传前，在 Web Service 的生产变量环境中运行一次 `pnpm kb:storage:cors`，将 Bucket CORS 限制到 `APP_BASE_URL`。
+
 `LOCAL_EMBEDDING_API_KEY` 在 Railway 中已设置为服务内 token。公网直接访问 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。
 
 旧的独立 `embeddings` Railway 服务已不再作为主路径使用；demo 主链路依赖 app 内置 embedding endpoint。
@@ -177,6 +186,7 @@ worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，�
 4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
 5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
 6. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
-7. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查邮箱登录、Google 登录、用户隔离、管理员页面和 Agent Run 租约恢复。
+7. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
+8. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查邮箱登录、Google 登录、用户隔离、分片上传、知识库解析和 Agent Run 租约恢复。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。

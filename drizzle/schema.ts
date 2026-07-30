@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   index,
   integer,
   jsonb,
@@ -264,7 +265,19 @@ export const knowledgeDocuments = pgTable(
     filename: varchar("filename", { length: 255 }).notNull(), // 原始文件名
     fileType: varchar("fileType", { length: 16 }).notNull(), // markdown | csv
     status: knowledgeDocumentStatusEnum("status").default("pending").notNull(),
+    objectKey: text("objectKey"), // 对象存储中的文件唯一地址
+    uploadId: text("uploadId"), // 对象存储的分片上传会话 ID
+    uploadVersion: integer("uploadVersion").default(1).notNull(), // 上传版本，用于忽略过期的解析任务
+    fileSize: bigint("fileSize", { mode: "number" }), // 原始文件总大小（字节）
+    uploadPartSize: bigint("uploadPartSize", { mode: "number" }), // 单个上传分片大小（字节）
+    uploadedBytes: bigint("uploadedBytes", { mode: "number" })
+      .default(0)
+      .notNull(), // 已上传字节数，用于显示进度和断点续传
+    contentType: varchar("contentType", { length: 128 }), // 文件 MIME 类型
+    category: varchar("category", { length: 128 }), // 上传时指定的知识条目分类
     totalChunks: integer("totalChunks").default(0).notNull(), // 解析出的条目总数（进度分母）
+    parsedChunks: integer("parsedChunks").default(0).notNull(), // 已解析并写入的条目数
+    failureStage: varchar("failureStage", { length: 32 }), // 失败环节，例如 upload 或 parsing
     error: text("error"), // 失败原因
     uploadedBy: integer("uploadedBy"), // 上传者用户 ID
     createdAt: timestamp("createdAt", { withTimezone: true })
@@ -273,6 +286,7 @@ export const knowledgeDocuments = pgTable(
     updatedAt: timestamp("updatedAt", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    completedAt: timestamp("completedAt", { withTimezone: true }),
   },
   table => ({
     statusIdx: index("idx_knowledge_documents_status").on(table.status),
