@@ -25,13 +25,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { trpc } from "@/lib/trpc";
 import type { TokenQuotaSnapshot, TokenUsageState } from "@shared/types";
 import {
   AlertCircle,
   Bot,
+  ChevronDown,
   Clock3,
   ClipboardList,
   Copy,
@@ -319,6 +324,8 @@ export default function SmartChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [quotaSnapshot, setQuotaSnapshot] = useState<TokenQuotaSnapshot | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [quotaDetailsOpen, setQuotaDetailsOpen] = useState(false);
+  const quotaDetailsRef = useRef<HTMLDivElement>(null);
   const [ticketDraft, setTicketDraft] = useState<{
     sourceMessageId: string;
     title: string;
@@ -338,6 +345,27 @@ export default function SmartChat() {
   useEffect(() => {
     if (tokenQuota) setQuotaSnapshot(tokenQuota);
   }, [tokenQuota]);
+
+  useEffect(() => {
+    if (!quotaDetailsOpen) return;
+
+    const closeOnOutsideInteraction = (event: PointerEvent | FocusEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !quotaDetailsRef.current?.contains(target)
+      ) {
+        setQuotaDetailsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsideInteraction);
+    document.addEventListener("focusin", closeOnOutsideInteraction);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideInteraction);
+      document.removeEventListener("focusin", closeOnOutsideInteraction);
+    };
+  }, [quotaDetailsOpen]);
 
   useEffect(() => {
     if (!chatHistory) return;
@@ -1137,52 +1165,12 @@ export default function SmartChat() {
           )}
         </div>
 
-        <div className="shrink-0 space-y-2 py-2">
-          {quotaSnapshot ? (
-            <Alert
-              className={
-                quotaError
-                  ? "border-red-200 bg-red-50 text-red-800"
-                  : "border-gray-200 bg-white"
-              }
-            >
-              {quotaError ? <AlertCircle /> : <Clock3 />}
-              <AlertTitle className="flex flex-wrap items-center gap-2">
-                今日 Token 额度（UTC）
-                {!quotaSnapshot.enforced || quotaSnapshot.quotaLimitTokens === 0 ? (
-                  <Badge variant="outline">观测模式</Badge>
-                ) : null}
-                {quotaSnapshot.adminExempt ? (
-                  <Badge variant="outline">管理员豁免</Badge>
-                ) : null}
-              </AlertTitle>
-              <AlertDescription>
-                <p>
-                  已消耗 {formatTokens(quotaSnapshot.usedTokens)} · 已预留{" "}
-                  {formatTokens(quotaSnapshot.reservedTokens)} · 剩余{" "}
-                  {quotaSnapshot.remainingTokens == null
-                    ? "不限额"
-                    : formatTokens(quotaSnapshot.remainingTokens)}
-                  {quotaSnapshot.quotaLimitTokens > 0
-                    ? ` / ${formatTokens(quotaSnapshot.quotaLimitTokens)}`
-                    : ""}
-                </p>
-                <p>
-                  UTC 日期 {quotaSnapshot.bucketDate}，重置时间 {new Date(
-                    quotaSnapshot.resetAt
-                  ).toLocaleString()}。
-                  {quotaError ? ` ${quotaError}` : ""}
-                </p>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-        </div>
-
-        <form
-          ref={composerRef}
-          onSubmit={handleSendMessage}
-          className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
-        >
+        <div className="shrink-0 py-2">
+          <form
+            ref={composerRef}
+            onSubmit={handleSendMessage}
+            className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
+          >
           <Textarea
             rows={1}
             disabled={isLoading || quotaBlocksSending}
@@ -1197,6 +1185,71 @@ export default function SmartChat() {
               }
             }}
           />
+          {quotaSnapshot ? (
+            <Collapsible
+              ref={quotaDetailsRef}
+              open={quotaDetailsOpen}
+              onOpenChange={setQuotaDetailsOpen}
+              className="absolute bottom-3 left-3 max-w-[calc(100%-5.5rem)]"
+            >
+              <CollapsibleTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={
+                    quotaError
+                      ? "h-10 gap-1.5 px-2 text-red-700 hover:bg-red-50 hover:text-red-800"
+                      : "h-10 gap-1.5 px-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                  }
+                  aria-label={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
+                  title={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
+                >
+                  {quotaError ? <AlertCircle className="h-4 w-4" /> : null}
+                  <span className="truncate text-xs sm:text-sm">
+                    Token {quotaSnapshot.remainingTokens == null
+                      ? `已用 ${formatTokens(quotaSnapshot.usedTokens)}`
+                      : `剩余 ${formatTokens(quotaSnapshot.remainingTokens)}`}
+                  </span>
+                  <ChevronDown
+                    className={`h-4 w-4 shrink-0 transition-transform ${
+                      quotaDetailsOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="absolute bottom-12 left-0 z-20 w-[min(22rem,calc(100vw-3rem))] rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600 shadow-lg">
+                <div className="flex flex-wrap items-center gap-2 font-medium text-gray-900">
+                  今日 Token 额度（UTC）
+                  {!quotaSnapshot.enforced || quotaSnapshot.quotaLimitTokens === 0 ? (
+                    <Badge variant="outline">观测模式</Badge>
+                  ) : null}
+                  {quotaSnapshot.adminExempt ? (
+                    <Badge variant="outline">管理员豁免</Badge>
+                  ) : null}
+                </div>
+                <div className="mt-2 space-y-1">
+                  <p>
+                    已消耗 {formatTokens(quotaSnapshot.usedTokens)} · 已预留{" "}
+                    {formatTokens(quotaSnapshot.reservedTokens)}
+                  </p>
+                  <p>
+                    剩余 {quotaSnapshot.remainingTokens == null
+                      ? "不限额"
+                      : formatTokens(quotaSnapshot.remainingTokens)}
+                    {quotaSnapshot.quotaLimitTokens > 0
+                      ? ` / ${formatTokens(quotaSnapshot.quotaLimitTokens)}`
+                      : ""}
+                  </p>
+                  <p>
+                    UTC 日期 {quotaSnapshot.bucketDate}，重置时间{" "}
+                    {new Date(quotaSnapshot.resetAt).toLocaleString()}。
+                  </p>
+                  {quotaError ? <p className="text-red-700">{quotaError}</p> : null}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
           <Button
             type="submit"
             size="icon-lg"
@@ -1211,7 +1264,8 @@ export default function SmartChat() {
               <Send className="h-4 w-4" />
             )}
           </Button>
-        </form>
+          </form>
+        </div>
       </div>
 
       <Dialog
