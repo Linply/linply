@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunStatus, AgentRunStepType } from "./db";
 import * as db from "./db";
+import { deriveAgentWriteAuthorization } from "./agentPolicy";
 import {
   AgentHandoffEvaluationSchema,
   AgentToolInputSchemas,
@@ -10,9 +11,11 @@ import {
   buildStructuredAgentOutput,
   buildToolEffectIdentity,
   classifyAgentToolError,
+  consumeConfirmedAgentStream,
   evaluateInputGuardrails,
   evaluateAgentHandoff,
   getAgentTraceId,
+  resolveAgentSdkUsage,
   summarizeAgentValue,
 } from "./agentService";
 
@@ -225,6 +228,108 @@ describe("agent tool validation and summaries", () => {
       userId: 42,
       limit: 5,
       offset: 0,
+    });
+  });
+
+  it("records target mismatch as a non-retry policy denial without side effects", async () => {
+    const runId = "22222222-2222-4222-8222-222222222222";
+    const noteTool = agentTools.find(tool => tool.name === "addTicketNote");
+    expect(noteTool).toBeDefined();
+
+    vi.spyOn(db, "addAgentRunStep").mockResolvedValue({ id: 1 });
+    vi.spyOn(db, "findReusableAgentToolInvocation").mockResolvedValue(null);
+    vi.spyOn(db, "getAgentToolInvocationRetryCount").mockResolvedValue(0);
+    vi.spyOn(db, "startAgentToolInvocation").mockResolvedValue({
+      id: 21,
+    } as Awaited<ReturnType<typeof db.startAgentToolInvocation>>);
+    const failInvocation = vi
+      .spyOn(db, "failAgentToolInvocation")
+      .mockResolvedValue(null);
+    const addNote = vi
+      .spyOn(db, "addTicketNoteIdempotent")
+      .mockRejectedValue(new Error("side effect must not execute"));
+    const currentUserMessage = "请给工单 #42 添加备注：已经联系客户。";
+
+    const result = await noteTool!.invoke(
+      {
+        context: {
+          runId,
+          rootRunId: runId,
+          userId: 42,
+          role: "user",
+          currentUserMessage,
+          authorization: deriveAgentWriteAuthorization(currentUserMessage),
+        },
+      } as Parameters<NonNullable<typeof noteTool>["invoke"]>[0],
+      JSON.stringify({ ticketId: 43, content: "已经联系客户。" })
+    );
+
+    expect(result).toContain("POLICY_DENIED");
+    expect(addNote).not.toHaveBeenCalled();
+    expect(failInvocation).toHaveBeenCalledWith({
+      id: 21,
+      error: expect.stringContaining("POLICY_DENIED"),
+      errorType: "permission",
+      status: "failed",
+    });
+  });
+
+  it("preserves authorized side-effect idempotency replay on retry", async () => {
+    const rootRunId = "11111111-1111-4111-8111-111111111111";
+    const retryRunId = "22222222-2222-4222-8222-222222222222";
+    const createTool = agentTools.find(tool => tool.name === "createTicket");
+    expect(createTool).toBeDefined();
+    const currentUserMessage = "请创建一个支持工单。";
+    const historicalResult = {
+      success: true,
+      ticketId: 77,
+      idempotentReplay: false,
+      message: "工单已创建。",
+    };
+
+    vi.spyOn(db, "addAgentRunStep").mockResolvedValue({ id: 1 });
+    vi.spyOn(db, "findReusableAgentToolInvocation").mockResolvedValue({
+      id: 30,
+      rootRunId,
+      runId: rootRunId,
+      result: historicalResult,
+    } as Awaited<ReturnType<typeof db.findReusableAgentToolInvocation>>);
+    vi.spyOn(db, "getAgentToolInvocationRetryCount").mockResolvedValue(0);
+    vi.spyOn(db, "startAgentToolInvocation").mockResolvedValue({
+      id: 31,
+    } as Awaited<ReturnType<typeof db.startAgentToolInvocation>>);
+    const completeInvocation = vi
+      .spyOn(db, "completeAgentToolInvocation")
+      .mockResolvedValue(null);
+    const createTicket = vi
+      .spyOn(db, "createTicketIdempotent")
+      .mockRejectedValue(new Error("side effect must not execute"));
+
+    const result = await createTool!.invoke(
+      {
+        context: {
+          runId: retryRunId,
+          rootRunId,
+          userId: 42,
+          role: "user",
+          currentUserMessage,
+          authorization: deriveAgentWriteAuthorization(currentUserMessage),
+        },
+      } as Parameters<NonNullable<typeof createTool>["invoke"]>[0],
+      JSON.stringify({
+        title: "物流异常",
+        description: "订单状态未更新",
+        priority: "medium",
+      })
+    );
+
+    expect(result).toEqual(historicalResult);
+    expect(createTicket).not.toHaveBeenCalled();
+    expect(completeInvocation).toHaveBeenCalledWith({
+      id: 31,
+      result: historicalResult,
+      status: "skipped",
+      replayedFromInvocationId: 30,
     });
   });
 
@@ -456,6 +561,84 @@ describe("agent tool validation and summaries", () => {
     expect(summary.length).toBeLessThanOrEqual(123);
     expect(summary).toContain("ticketId");
     expect(summary.endsWith("...")).toBe(true);
+  });
+});
+
+describe("agent SDK usage normalization", () => {
+  it("accepts confirmed non-zero aggregate usage", () => {
+    expect(
+      resolveAgentSdkUsage({
+        requests: 1,
+        inputTokens: 120,
+        outputTokens: 30,
+        totalTokens: 150,
+      })
+    ).toEqual({ requests: 1, inputTokens: 120, outputTokens: 30, totalTokens: 150 });
+  });
+
+  it("falls back to non-zero request entries when aggregate fields are zero", () => {
+    expect(
+      resolveAgentSdkUsage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        requestUsageEntries: [
+          { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+          { inputTokens: 40, outputTokens: 10, totalTokens: 50 },
+        ],
+      })
+    ).toEqual({ requests: 2, inputTokens: 120, outputTokens: 30, totalTokens: 150 });
+  });
+
+  it("rejects unconfirmed zero usage", () => {
+    expect(
+      resolveAgentSdkUsage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      })
+    ).toBeUndefined();
+  });
+  it("rejects a stream error even after partial text was emitted", async () => {
+    async function* partialStream() {
+      yield "partial";
+      throw new Error("stream interrupted");
+    }
+    await expect(
+      consumeConfirmedAgentStream({
+        textStream: partialStream(),
+        completed: Promise.resolve(),
+        usage: { requests: 1, inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+      })
+    ).rejects.toThrow("stream interrupted");
+  });
+
+  it("rejects completion failure after a complete text stream", async () => {
+    async function* textStream() {
+      yield "partial";
+    }
+    await expect(
+      consumeConfirmedAgentStream({
+        textStream: textStream(),
+        completed: Promise.reject(new Error("completion interrupted")),
+        usage: { requests: 1, inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+      })
+    ).rejects.toThrow("completion interrupted");
+  });
+
+  it("rejects completed streams without confirmed usage", async () => {
+    async function* textStream() {
+      yield "answer";
+    }
+    await expect(
+      consumeConfirmedAgentStream({
+        textStream: textStream(),
+        completed: Promise.resolve(),
+        usage: { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      })
+    ).rejects.toThrow("confirmed token usage");
   });
 });
 

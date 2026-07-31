@@ -14,6 +14,7 @@ import {
 } from "./parse";
 import { enqueueKnowledgeEmbed } from "./queue";
 import { getStoredDocumentStream } from "./storage";
+import { scanKnowledgeContent } from "./security";
 
 export type KnowledgeFileType = "markdown" | "csv";
 const INSERT_BATCH_SIZE = 100;
@@ -86,6 +87,12 @@ export async function processKnowledgeEmbeddingBatch(
   let failed = 0;
 
   for (const entry of entries) {
+    if (entry.securityStatus !== "approved") {
+      await db
+        .setKnowledgeEntryStatus(entry.id, "blocked")
+        .catch(() => undefined);
+      continue;
+    }
     if (entry.embeddingStatus === "completed") continue;
     attempted += 1;
     try {
@@ -166,24 +173,46 @@ export async function processStoredKnowledgeDocument(
 
   const flush = async () => {
     if (batch.length === 0) return;
+    const scannedBatch = batch.map(entry => {
+      const scan = scanKnowledgeContent(entry);
+      return {
+        ...entry,
+        securityStatus: scan.status,
+        securityScannerVersion: scan.scannerVersion,
+        securityContentHash: scan.contentHash,
+        securityFindings: scan.findings,
+        securityScore: scan.securityScore,
+        securityScannedAt: new Date(),
+      };
+    });
     const inserted = await db.addKnowledgeEntriesBatch(
       documentId,
-      batch,
+      scannedBatch,
       embeddingEnabled ? "pending" : "completed"
     );
     parsedChunks += inserted.length;
     batch = [];
+    const securityCounts = await db.refreshKnowledgeDocumentSecurityCounts(
+      documentId
+    );
     await db.updateKnowledgeDocument(documentId, {
       parsedChunks,
       totalChunks: parsedChunks,
+      approvedChunks: securityCounts.approved,
+      quarantinedChunks: securityCounts.quarantined,
+      rejectedChunks: securityCounts.rejected,
+      pendingSecurityChunks: securityCounts.pending,
     });
-    if (embeddingEnabled) {
+    const approved = inserted.filter(
+      entry => entry.securityStatus === "approved"
+    );
+    if (embeddingEnabled && approved.length > 0) {
       await enqueueKnowledgeEmbed({
         documentId,
-        entryIds: inserted.map(entry => entry.id),
+        entryIds: approved.map(entry => entry.id),
       });
-    } else {
-      await detectKeywordConflicts(documentId, inserted);
+    } else if (!embeddingEnabled) {
+      await detectKeywordConflicts(documentId, approved);
     }
   };
 
@@ -198,7 +227,9 @@ export async function processStoredKnowledgeDocument(
         "未从文件中解析出任何条目（CSV 需含 title/content 表头，Markdown 需含标题与正文）"
       );
     }
-    if (embeddingEnabled) {
+    const finalSecurityCounts =
+      await db.refreshKnowledgeDocumentSecurityCounts(documentId);
+    if (embeddingEnabled && finalSecurityCounts.approved > 0) {
       await db.updateKnowledgeDocument(documentId, {
         status: "indexing",
         totalChunks: parsedChunks,
@@ -288,22 +319,40 @@ export async function ingestDocument(params: {
   }
 
   const embeddingEnabled = isEmbeddingEnabled();
+  const scannedEntries = entries.map(entry => {
+    const scan = scanKnowledgeContent(entry);
+    return {
+      ...entry,
+      securityStatus: scan.status,
+      securityScannerVersion: scan.scannerVersion,
+      securityContentHash: scan.contentHash,
+      securityFindings: scan.findings,
+        securityScore: scan.securityScore,
+      securityScannedAt: new Date(),
+    };
+  });
   const inserted = await db.addKnowledgeEntriesBatch(
     doc.id,
-    entries,
+    scannedEntries,
     embeddingEnabled ? "pending" : "completed"
   );
+  const approved = inserted.filter(entry => entry.securityStatus === "approved");
+  const securityCounts = await db.refreshKnowledgeDocumentSecurityCounts(doc.id);
   await db.updateKnowledgeDocument(doc.id, {
-    status: embeddingEnabled ? "indexing" : "completed",
+    status: embeddingEnabled && approved.length > 0 ? "indexing" : "completed",
     parsedChunks: inserted.length,
     totalChunks: inserted.length,
+    approvedChunks: securityCounts.approved,
+    quarantinedChunks: securityCounts.quarantined,
+    rejectedChunks: securityCounts.rejected,
+    pendingSecurityChunks: securityCounts.pending,
     error: null,
-    completedAt: embeddingEnabled ? null : new Date(),
+    completedAt: embeddingEnabled && approved.length > 0 ? null : new Date(),
   });
-  if (embeddingEnabled) {
+  if (embeddingEnabled && approved.length > 0) {
     void processKnowledgeEmbeddingBatch(
       doc.id,
-      inserted.map(entry => entry.id)
+      approved.map(entry => entry.id)
     ).catch(error => {
       console.error(
         `[KnowledgeIngest] Legacy embedding job failed for #${doc.id}:`,
@@ -311,12 +360,12 @@ export async function ingestDocument(params: {
       );
     });
   } else {
-    await detectKeywordConflicts(doc.id, inserted);
+    await detectKeywordConflicts(doc.id, approved);
   }
   return {
     documentId: doc.id,
     totalChunks: inserted.length,
-    status: embeddingEnabled ? "indexing" : "completed",
+    status: embeddingEnabled && approved.length > 0 ? "indexing" : "completed",
     embeddingEnabled,
   };
 }

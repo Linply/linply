@@ -5,7 +5,16 @@ import * as db from "./db";
 import { parseJsonValue } from "./agentUtils";
 import { createAgentChatResponse } from "./agentService";
 import { enqueueAgentRun } from "./agentRunExecution";
+import {
+  TOKEN_QUOTA_EXCEEDED_CODE,
+  TokenQuotaExceededError,
+} from "./tokenQuota";
 import { ingestDocument } from "./knowledge/ingest";
+import {
+  scanKnowledgeContent,
+  toSafeKnowledgeDto,
+} from "./knowledge/security";
+import { KNOWLEDGE_SECURITY_STATUSES } from "../shared/knowledge";
 import {
   abortMultipartUpload,
   calculateMultipartPartSize,
@@ -50,6 +59,15 @@ import {
 const reindexKnowledgeEntry = async (id: number) => {
   const entry = await db.getKnowledgeEntryById(id);
   if (!entry) throw new Error("Knowledge entry not found");
+  if (entry.securityStatus !== "approved") {
+    await db.updateKnowledgeEntry(id, {
+      embedding: null,
+      embeddingStatus: "blocked",
+      conflictWith: null,
+      conflictScore: null,
+    });
+    return { embeddingEnabled: false, status: "blocked" as const };
+  }
 
   if (!isEmbeddingEnabled()) {
     await db.updateKnowledgeEntry(id, {
@@ -346,12 +364,22 @@ export const appRouter = router({
   // ============ Knowledge Base Router ============
   knowledge: router({
     // 获取知识库列表（仅管理员）
-    list: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role !== "admin") {
-        throw new Error("Unauthorized");
-      }
-      return await db.listKnowledgeEntries();
-    }),
+    list: protectedProcedure
+      .input(
+        z
+          .object({
+            securityStatus: z.enum(KNOWLEDGE_SECURITY_STATUSES).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        if (ctx.user.role !== "admin") {
+          throw new Error("Unauthorized");
+        }
+        return db.listKnowledgeEntries({
+          securityStatus: input?.securityStatus,
+        });
+      }),
 
     // 搜索知识库（仅管理员）
     search: protectedProcedure
@@ -372,7 +400,8 @@ export const appRouter = router({
     getByCategory: publicProcedure
       .input(z.object({ category: z.string() }))
       .query(async ({ input }) => {
-        return await db.getKnowledgeByCategory(input.category);
+        const entries = await db.getKnowledgeByCategory(input.category);
+        return entries.map(toSafeKnowledgeDto);
       }),
 
     // 添加知识库条目（仅管理员）
@@ -389,11 +418,22 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") {
           throw new Error("Unauthorized");
         }
-        const entry = await db.addKnowledgeEntry(input);
-        try {
-          await reindexKnowledgeEntry(entry.id);
-        } catch {
-          // The mutation still succeeds so admins can fix embedding service later.
+        const scan = scanKnowledgeContent(input);
+        const entry = await db.addKnowledgeEntry({
+          ...input,
+          securityStatus: scan.status,
+          securityScannerVersion: scan.scannerVersion,
+          securityContentHash: scan.contentHash,
+          securityFindings: scan.findings,
+          securityScore: scan.securityScore,
+          securityScannedAt: new Date(),
+        });
+        if (scan.status === "approved") {
+          try {
+            await reindexKnowledgeEntry(entry.id);
+          } catch {
+            // The mutation still succeeds so admins can fix embedding service later.
+          }
         }
         return entry;
       }),
@@ -413,22 +453,150 @@ export const appRouter = router({
         if (ctx.user.role !== "admin") {
           throw new Error("Unauthorized");
         }
+        const scan = scanKnowledgeContent(input);
         await db.updateKnowledgeEntry(input.id, {
           title: input.title,
           content: input.content,
           category: input.category,
           keywords: input.keywords?.trim() ? input.keywords : null,
           embedding: null,
-          embeddingStatus: "pending",
+          embeddingStatus: scan.status === "approved" ? "pending" : "blocked",
           conflictWith: null,
           conflictScore: null,
+          securityStatus: scan.status,
+          securityScannerVersion: scan.scannerVersion,
+          securityContentHash: scan.contentHash,
+          securityFindings: scan.findings,
+          securityScore: scan.securityScore,
+          securityScannedAt: new Date(),
+          securityReviewedAt: null,
+          securityReviewedBy: null,
+          securityReviewReason: null,
         });
-        try {
-          await reindexKnowledgeEntry(input.id);
-        } catch {
-          // Keep edited content even if embedding service is unavailable.
+        await db.appendKnowledgeSecurityEvent({
+          knowledgeId: input.id,
+          action: "scan",
+          toStatus: scan.status,
+          scannerVersion: scan.scannerVersion,
+          contentHash: scan.contentHash,
+          findings: scan.findings,
+          securityScore: scan.securityScore,
+          actorUserId: ctx.user.id,
+        });
+        if (scan.status === "approved") {
+          try {
+            await reindexKnowledgeEntry(input.id);
+          } catch {
+            // Keep edited content even if embedding service is unavailable.
+          }
         }
-        return { success: true };
+        return { success: true, securityStatus: scan.status };
+      }),
+
+    review: protectedProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          decision: z.enum(["approve", "reject"]),
+          reason: z.string().trim().min(3).max(2_000),
+          expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
+        const entry = await db.getKnowledgeEntryById(input.id);
+        if (!entry) throw new TRPCError({ code: "NOT_FOUND" });
+        const scan = scanKnowledgeContent(entry);
+        if (scan.contentHash !== input.expectedContentHash) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "知识内容已发生变化，请刷新后重新审核",
+          });
+        }
+        const result = await db.applyKnowledgeSecurityDecision({
+          knowledgeId: input.id,
+          expectedContentHash: input.expectedContentHash,
+          toStatus: input.decision === "approve" ? "approved" : "rejected",
+          reason: input.reason,
+          actorUserId: ctx.user.id,
+          scannerVersion: scan.scannerVersion,
+          findings: scan.findings,
+          securityScore: scan.securityScore,
+        });
+        if (result.outcome === "not_found") {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        if (result.outcome === "content_changed") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "知识内容已发生变化，请刷新后重新审核",
+          });
+        }
+        if (result.entry.documentId != null) {
+          await db.refreshKnowledgeDocumentSecurityCounts(
+            result.entry.documentId
+          );
+        }
+        if (result.entry.securityStatus === "approved") {
+          try {
+            await reindexKnowledgeEntry(result.entry.id);
+          } catch {
+            // Approval persists; embedding can be retried by an administrator.
+          }
+        }
+        return result.entry;
+      }),
+
+    rescan: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
+        const entry = await db.getKnowledgeEntryById(input.id);
+        if (!entry) throw new TRPCError({ code: "NOT_FOUND" });
+        const scan = scanKnowledgeContent(entry);
+        await db.updateKnowledgeEntry(entry.id, {
+          securityStatus: scan.status,
+          securityScannerVersion: scan.scannerVersion,
+          securityContentHash: scan.contentHash,
+          securityFindings: scan.findings,
+          securityScore: scan.securityScore,
+          securityScannedAt: new Date(),
+          securityReviewedAt: null,
+          securityReviewedBy: null,
+          securityReviewReason: null,
+          embedding: null,
+          embeddingStatus: scan.status === "approved" ? "pending" : "blocked",
+        });
+        await db.appendKnowledgeSecurityEvent({
+          knowledgeId: entry.id,
+          documentId: entry.documentId,
+          action: "rescan",
+          fromStatus: entry.securityStatus,
+          toStatus: scan.status,
+          scannerVersion: scan.scannerVersion,
+          contentHash: scan.contentHash,
+          findings: scan.findings,
+          securityScore: scan.securityScore,
+          actorUserId: ctx.user.id,
+        });
+        if (entry.documentId != null) {
+          await db.refreshKnowledgeDocumentSecurityCounts(entry.documentId);
+        }
+        if (scan.status === "approved") {
+          try {
+            await reindexKnowledgeEntry(entry.id);
+          } catch {
+            // Rescan succeeds even if embedding is temporarily unavailable.
+          }
+        }
+        return scan;
+      }),
+
+    securityHistory: protectedProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(async ({ input, ctx }) => {
+        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
+        return db.getKnowledgeSecurityHistory(input.id);
       }),
 
     // 重新生成单条 embedding（仅管理员）
@@ -865,6 +1033,10 @@ export const appRouter = router({
 
   // ============ Agent Runs Router ============
   agentRuns: router({
+    getTokenQuota: protectedProcedure.query(async ({ ctx }) =>
+      db.getTokenQuota(ctx.user.id, ctx.user.role)
+    ),
+
     getById: protectedProcedure
       .input(z.object({ id: z.string().uuid() }))
       .query(async ({ input, ctx }) => {
@@ -893,17 +1065,37 @@ export const appRouter = router({
       }),
 
     retry: protectedProcedure
-      .input(z.object({ id: z.string().uuid() }))
+      .input(
+        z.object({
+          id: z.string().uuid(),
+          content: z.string().trim().min(1).max(10_000).optional(),
+        })
+      )
       .mutation(async ({ input, ctx }) => {
         const existingRun = await getAgentRunRecordForUser(input.id, ctx.user);
 
-        const run = await enqueueAgentRun({
-          userId: existingRun.userId,
-          ticketId: existingRun.ticketId ?? undefined,
-          content: existingRun.input,
-          retryOfRunId: existingRun.id,
-        });
-        return { runId: run.id };
+        try {
+          const run = await enqueueAgentRun({
+            userId: existingRun.userId,
+            userRole: ctx.user.role,
+            ticketId: existingRun.ticketId ?? undefined,
+            content: input.content ?? existingRun.input,
+            retryOfRunId: existingRun.id,
+          });
+          return { runId: run.id, quota: run.quota };
+        } catch (error) {
+          if (error instanceof TokenQuotaExceededError) {
+            throw new TRPCError({
+              code: "TOO_MANY_REQUESTS",
+              message: error.message,
+              cause: {
+                code: TOKEN_QUOTA_EXCEEDED_CODE,
+                quota: error.quota,
+              },
+            });
+          }
+          throw error;
+        }
       }),
   }),
 });

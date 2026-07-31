@@ -13,3 +13,13 @@ export const KNOWLEDGE_DOCUMENT_STATUSES = [
 
 export type KnowledgeDocumentStatus =
   (typeof KNOWLEDGE_DOCUMENT_STATUSES)[number];
+
+export const KNOWLEDGE_SECURITY_STATUSES = [
+  "pending", // 等待安全扫描，暂不允许进入检索
+  "approved", // 已通过自动扫描或人工审核，允许建立索引并参与检索
+  "quarantined", // 自动扫描发现高风险内容，已隔离并等待管理员复核
+  "rejected", // 管理员确认拒绝，禁止建立索引和参与检索
+] as const;
+
+export type KnowledgeSecurityStatus =
+  (typeof KNOWLEDGE_SECURITY_STATUSES)[number];

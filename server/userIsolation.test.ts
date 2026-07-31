@@ -6,6 +6,7 @@ vi.mock("./db", () => ({
   getAgentRunById: vi.fn(),
   getAgentRunSummaries: vi.fn(),
   getAgentRunWithSteps: vi.fn(),
+  getTokenQuota: vi.fn(),
   getChatHistory: vi.fn(),
   getKnowledgeByIds: vi.fn(),
   getRecentChatHistory: vi.fn(),
@@ -84,6 +85,16 @@ describe("user resource isolation", () => {
     });
     mockedDb.getAgentRunById.mockResolvedValue(runB);
     mockedDb.getAgentRunSummaries.mockResolvedValue([]);
+    mockedDb.getTokenQuota.mockResolvedValue({
+      bucketDate: "2026-07-30",
+      resetAt: "2026-07-31T00:00:00.000Z",
+      quotaLimitTokens: 0,
+      reservedTokens: 0,
+      usedTokens: 0,
+      remainingTokens: null,
+      enforced: false,
+      adminExempt: false,
+    });
   });
 
   it("rejects A from every ticket and chat history endpoint for B's ticket", async () => {
@@ -138,6 +149,16 @@ describe("user resource isolation", () => {
 
     expect(mockedDb.getChatHistory).toHaveBeenCalledWith(userA.id, undefined, 50);
     expect(mockedDb.getAgentRunSummaries).toHaveBeenCalledWith([]);
+  });
+
+  it("returns the caller's current UTC token quota snapshot", async () => {
+    const caller = appRouter.createCaller(createContext());
+    await expect(caller.agentRuns.getTokenQuota()).resolves.toMatchObject({
+      bucketDate: "2026-07-30",
+      resetAt: "2026-07-31T00:00:00.000Z",
+      enforced: false,
+    });
+    expect(mockedDb.getTokenQuota).toHaveBeenCalledWith(userA.id, userA.role);
   });
 
   it("rejects A from B's Agent Run detail and retry endpoints", async () => {

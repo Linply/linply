@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { trpc } from "@/lib/trpc";
+import type { TokenUsageState } from "@shared/types";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import {
@@ -70,7 +71,33 @@ const formatDuration = (durationMs?: number | null) => {
 };
 
 const formatTokens = (tokens?: number | null) =>
-  new Intl.NumberFormat("zh-CN").format(tokens ?? 0);
+  tokens == null ? "未知" : new Intl.NumberFormat("zh-CN").format(tokens);
+
+const usageStateMeta: Record<
+  TokenUsageState,
+  { label: string; description: string; className: string }
+> = {
+  reserved: {
+    label: "已预留",
+    description: "运行尚未结算，当前仅显示预留额度。",
+    className: "border-sky-200 bg-sky-50 text-sky-700",
+  },
+  actual: {
+    label: "实际用量",
+    description: "模型已返回可核验的实际 Token 用量。",
+    className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  },
+  no_model: {
+    label: "模型未启动",
+    description: "本次尝试未启动模型，不计入 Token 额度。",
+    className: "border-gray-200 bg-gray-50 text-gray-600",
+  },
+  unknown: {
+    label: "实际用量未知",
+    description: "模型已启动但未返回用量，系统按预留量计入额度。",
+    className: "border-amber-200 bg-amber-50 text-amber-700",
+  },
+};
 
 const formatTimestamp = (value?: string | Date | null) =>
   value
@@ -107,7 +134,10 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
 
     try {
       const result = await retryMutation.mutateAsync({ id: run.id });
-      await utils.agentRuns.getById.invalidate({ id: run.id });
+      await Promise.all([
+        utils.agentRuns.getById.invalidate({ id: run.id }),
+        utils.agentRuns.getTokenQuota.invalidate(),
+      ]);
       toast.success("已重新执行");
       setLocation(`/runs/${result.runId}`);
     } catch (error) {
@@ -178,9 +208,10 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
       : typeof metrics.latencyMs === "number"
         ? metrics.latencyMs
         : null;
-  const contextUsagePercent = run.contextWindowTokens
-    ? Math.min(100, ((run.totalTokens ?? 0) / run.contextWindowTokens) * 100)
-    : 0;
+  const contextUsagePercent =
+    run.contextWindowTokens && run.totalTokens != null
+      ? Math.min(100, (run.totalTokens / run.contextWindowTokens) * 100)
+      : 0;
   const queueDurationMs = run.startedAt
     ? Math.max(
         0,
@@ -311,6 +342,61 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                 )}
               </div>
             </section>
+            {run.attempts.length > 0 ? (
+              <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+                <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 sm:px-5">
+                  <h2 className="text-sm font-semibold text-gray-900">Token 尝试账本</h2>
+                  <span className="text-xs text-gray-500">{run.attempts.length} 次</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[58rem] text-left text-xs">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr>
+                        <th className="px-4 py-2 font-medium">尝试</th>
+                        <th className="px-4 py-2 font-medium">状态</th>
+                        <th className="px-4 py-2 font-medium">预留 / 实际 / 计入</th>
+                        <th className="px-4 py-2 font-medium">模型</th>
+                        <th className="px-4 py-2 font-medium">启动 / 结算</th>
+                        <th className="px-4 py-2 font-medium">说明</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {run.attempts.map(attempt => (
+                        <tr key={attempt.id} className="align-top">
+                          <td className="px-4 py-3 font-medium text-gray-900">
+                            #{attempt.attemptNumber}
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge variant="outline">
+                              {attempt.status === "reserved"
+                                ? "已预留"
+                                : attempt.status === "settled"
+                                  ? "已结算"
+                                  : "已释放"}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-3 tabular-nums text-gray-700">
+                            {formatTokens(attempt.reservedTokens)} /{" "}
+                            {formatTokens(attempt.totalTokens)} /{" "}
+                            {formatTokens(attempt.countedTokens)}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700">
+                            {attempt.llmModel ?? attempt.llmProvider ?? "未记录"}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500">
+                            <p>{formatTimestamp(attempt.modelStartedAt)}</p>
+                            <p className="mt-1">{formatTimestamp(attempt.settledAt)}</p>
+                          </td>
+                          <td className="max-w-xs px-4 py-3 text-gray-500">
+                            {usageStateMeta[attempt.usageState].description}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
           </div>
 
           <aside className="min-w-0 space-y-6">
@@ -339,6 +425,45 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                   </p>
                 </div>
               </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={usageStateMeta[run.usageState].className}
+                >
+                  {usageStateMeta[run.usageState].label}
+                </Badge>
+                <p className="text-xs leading-5 text-gray-500">
+                  {usageStateMeta[run.usageState].description}
+                </p>
+              </div>
+              <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-gray-100 pt-4 text-xs">
+                <div>
+                  <dt className="text-gray-500">计入额度</dt>
+                  <dd className="mt-1 font-semibold tabular-nums text-gray-900">
+                    {formatTokens(run.countedTokens)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-gray-500">预留额度</dt>
+                  <dd className="mt-1 font-semibold tabular-nums text-gray-900">
+                    {formatTokens(run.reservedTokens)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-gray-500">日额度快照</dt>
+                  <dd className="mt-1 font-medium tabular-nums text-gray-900">
+                    {run.quotaLimitTokens === 0
+                      ? "不限额"
+                      : formatTokens(run.quotaLimitTokens)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-gray-500">UTC 日期</dt>
+                  <dd className="mt-1 font-medium text-gray-900">
+                    {run.quotaBucketDate ?? "未记录"}
+                  </dd>
+                </div>
+              </dl>
               <div className="mt-4 border-t border-gray-100 pt-4">
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <span className="text-gray-500">上下文窗口参考</span>

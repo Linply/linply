@@ -10,6 +10,27 @@ const boundedNumber = (
     : fallback;
 };
 
+const boundedInteger = (
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+) => {
+  if (value === undefined || !/^-?\d+$/.test(value.trim())) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
+};
+
+const strictBoolean = (value: string | undefined, fallback: boolean) => {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
+};
+
+const MAX_TOKEN_QUOTA = 2_147_483_647;
+
 export const ENV = {
   databaseUrl: process.env.DATABASE_URL ?? "",
   appBaseUrl:
@@ -83,6 +104,27 @@ export const ENV = {
   agentWorkerPollMs: Number(process.env.AGENT_WORKER_POLL_MS ?? 500),
   agentWorkerLeaseMs: Number(process.env.AGENT_WORKER_LEASE_MS ?? 60_000),
   agentWorkerMaxAttempts: Number(process.env.AGENT_WORKER_MAX_ATTEMPTS ?? 3),
+  agentDailyTokenQuota: boundedInteger(
+    process.env.AGENT_DAILY_TOKEN_QUOTA,
+    0,
+    0,
+    MAX_TOKEN_QUOTA
+  ),
+  agentTokenQuotaEnforcement: strictBoolean(
+    process.env.AGENT_TOKEN_QUOTA_ENFORCEMENT ??
+      process.env.AGENT_DAILY_TOKEN_QUOTA_ENFORCEMENT,
+    false
+  ),
+  agentRunTokenReservation: boundedInteger(
+    process.env.AGENT_RUN_TOKEN_RESERVATION,
+    16_000,
+    0,
+    MAX_TOKEN_QUOTA
+  ),
+  agentTokenQuotaAdminExempt: strictBoolean(
+    process.env.AGENT_TOKEN_QUOTA_ADMIN_EXEMPT,
+    false
+  ),
   otelEnabled:
     process.env.OTEL_ENABLED === "true" ||
     (process.env.OTEL_ENABLED === undefined &&

@@ -25,7 +25,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import type { TokenQuotaSnapshot, TokenUsageState } from "@shared/types";
 import {
   AlertCircle,
   Bot,
@@ -64,14 +67,33 @@ type RetrievalStatus = {
 
 type MessageRunStats = {
   durationMs: number | null;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
   llmRequestCount: number;
   contextWindowTokens: number;
+  usageState?: TokenUsageState;
   llmModel?: string | null;
   traceId?: string | null;
 };
+
+type ChatStartPayload =
+  | { mode: "agent"; runId: string; quota: TokenQuotaSnapshot }
+  | {
+      error: string;
+      code?: string;
+      quota?: TokenQuotaSnapshot;
+    };
+
+class TokenQuotaError extends Error {
+  constructor(
+    message: string,
+    readonly quota?: TokenQuotaSnapshot
+  ) {
+    super(message);
+    this.name = "TokenQuotaError";
+  }
+}
 
 type ChatMessage = {
   id: string;
@@ -85,6 +107,7 @@ type ChatMessage = {
   structuredOutput?: StructuredOutput;
   retrieval?: RetrievalStatus | null;
   error?: string;
+  quotaExceeded?: boolean;
   sourcePrompt?: string;
   runStats?: MessageRunStats | null;
 };
@@ -180,14 +203,23 @@ const formatDuration = (durationMs?: number | null) => {
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 };
 
-const formatTokens = (tokens?: number | null) =>
-  new Intl.NumberFormat("zh-CN", {
-    notation: tokens && tokens >= 1_000 ? "compact" : "standard",
+const formatTokens = (tokens?: number | null) => {
+  if (tokens == null) return "未知";
+  return new Intl.NumberFormat("zh-CN", {
+    notation: tokens >= 1_000 ? "compact" : "standard",
     maximumFractionDigits: 1,
-  }).format(tokens ?? 0);
+  }).format(tokens);
+};
+
+const USAGE_STATE_LABELS: Record<TokenUsageState, string> = {
+  reserved: "执行中预留",
+  actual: "实际模型用量",
+  no_model: "模型未启动",
+  unknown: "实际用量未知（按预留计数）",
+};
 
 const getContextUsagePercent = (stats?: MessageRunStats | null) => {
-  if (!stats?.contextWindowTokens) return 0;
+  if (!stats?.contextWindowTokens || stats.totalTokens == null) return 0;
   return Math.min(100, (stats.totalTokens / stats.contextWindowTokens) * 100);
 };
 
@@ -285,6 +317,8 @@ export default function SmartChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [quotaSnapshot, setQuotaSnapshot] = useState<TokenQuotaSnapshot | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<{
     sourceMessageId: string;
     title: string;
@@ -298,7 +332,12 @@ export default function SmartChat() {
   const composerScrollFrameRef = useRef<number | null>(null);
 
   const { data: chatHistory } = trpc.chat.getHistory.useQuery({});
+  const { data: tokenQuota } = trpc.agentRuns.getTokenQuota.useQuery();
   const createTicketMutation = trpc.tickets.create.useMutation();
+
+  useEffect(() => {
+    if (tokenQuota) setQuotaSnapshot(tokenQuota);
+  }, [tokenQuota]);
 
   useEffect(() => {
     if (!chatHistory) return;
@@ -311,11 +350,12 @@ export default function SmartChat() {
       runStats: msg.runStats
         ? {
             durationMs: msg.runStats.durationMs ?? null,
-            inputTokens: msg.runStats.inputTokens ?? 0,
-            outputTokens: msg.runStats.outputTokens ?? 0,
-            totalTokens: msg.runStats.totalTokens ?? 0,
+            inputTokens: msg.runStats.inputTokens ?? null,
+            outputTokens: msg.runStats.outputTokens ?? null,
+            totalTokens: msg.runStats.totalTokens ?? null,
             llmRequestCount: msg.runStats.llmRequestCount ?? 0,
             contextWindowTokens: msg.runStats.contextWindowTokens ?? 0,
+            usageState: msg.runStats.usageState,
             llmModel: msg.runStats.llmModel ?? msg.llmModel,
             traceId: msg.runStats.traceId,
           }
@@ -412,6 +452,13 @@ export default function SmartChat() {
     [messages]
   );
 
+  const quotaBlocksSending = Boolean(
+    quotaSnapshot?.enforced &&
+      !quotaSnapshot.adminExempt &&
+      quotaSnapshot.quotaLimitTokens > 0 &&
+      quotaSnapshot.remainingTokens === 0
+  );
+
   const updateAssistant = (
     assistantId: string,
     updater: (message: ChatMessage) => ChatMessage
@@ -434,7 +481,7 @@ export default function SmartChat() {
 
   const sendMessage = async (content: string) => {
     const userMessage = content.trim();
-    if (!userMessage || isLoading) return;
+    if (!userMessage || isLoading || quotaBlocksSending) return;
 
     const now = Date.now();
     const assistantId = `${now + 1}`;
@@ -466,12 +513,33 @@ export default function SmartChat() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: userMessage }),
       });
-      const startPayload = await startResponse.json().catch(() => ({}));
+      const startPayload = (await startResponse
+        .json()
+        .catch(() => ({}))) as ChatStartPayload;
       if (!startResponse.ok) {
-        throw new Error(startPayload.error || "发送消息失败，请稍后重试");
+        if (
+          startResponse.status === 429 &&
+          "code" in startPayload &&
+          startPayload.code === "TOKEN_QUOTA_EXCEEDED"
+        ) {
+          if (startPayload.quota) setQuotaSnapshot(startPayload.quota);
+          setQuotaError(startPayload.error);
+          throw new TokenQuotaError(startPayload.error, startPayload.quota);
+        }
+        throw new Error(
+          "error" in startPayload
+            ? startPayload.error
+            : "发送消息失败，请稍后重试"
+        );
       }
 
-      let runId: string | undefined = startPayload.runId ?? undefined;
+      if (!("runId" in startPayload)) {
+        throw new Error("未创建 Agent Run，请稍后重试");
+      }
+      setQuotaSnapshot(startPayload.quota);
+      setQuotaError(null);
+      void utils.agentRuns.getTokenQuota.setData(undefined, startPayload.quota);
+      let runId: string | undefined = startPayload.runId;
       let lastEventId = 0;
       let receivedContent = false;
       let receivedDone = false;
@@ -658,26 +726,34 @@ export default function SmartChat() {
             totalTokens: 0,
             llmRequestCount: 0,
             contextWindowTokens: 0,
+            usageState: "unknown",
           } satisfies MessageRunStats),
       }));
-      await utils.chat.getHistory.invalidate();
+      await Promise.all([
+        utils.chat.getHistory.invalidate(),
+        utils.agentRuns.getTokenQuota.invalidate(),
+      ]);
     } catch (error: any) {
+      const isQuotaError = error instanceof TokenQuotaError;
       updateAssistant(assistantId, message => ({
         ...message,
         isStreaming: false,
         error: error?.message || "发送消息失败，请稍后重试",
+        quotaExceeded: isQuotaError,
         runStats:
           message.runStats ??
           ({
             durationMs: Date.now() - now,
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
+            inputTokens: null,
+            outputTokens: null,
+            totalTokens: null,
             llmRequestCount: 0,
             contextWindowTokens: 0,
+            usageState: "unknown",
           } satisfies MessageRunStats),
       }));
-      toast.error(error?.message || "发送消息失败，请稍后重试");
+      if (!isQuotaError) toast.error(error?.message || "发送消息失败，请稍后重试");
+      await utils.agentRuns.getTokenQuota.invalidate();
     } finally {
       setIsLoading(false);
     }
@@ -840,7 +916,7 @@ export default function SmartChat() {
                           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                           <span>{message.error}</span>
                         </div>
-                        {message.sourcePrompt ? (
+                        {message.sourcePrompt && !message.quotaExceeded ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -942,6 +1018,21 @@ export default function SmartChat() {
                                   {message.runStats?.llmRequestCount ?? 0} 次
                                 </span>
                               </div>
+                              {message.runStats?.usageState ? (
+                                <div className="flex items-center justify-between gap-4">
+                                  <span className="text-gray-500">用量状态</span>
+                                  <Badge
+                                    variant="outline"
+                                    className={
+                                      message.runStats.usageState === "unknown"
+                                        ? "border-amber-200 bg-amber-50 text-amber-700"
+                                        : "bg-gray-50 text-gray-700"
+                                    }
+                                  >
+                                    {USAGE_STATE_LABELS[message.runStats.usageState]}
+                                  </Badge>
+                                </div>
+                              ) : null}
                               <div className="grid grid-cols-3 gap-3 border-y border-gray-100 py-3 text-center">
                                 <div>
                                   <p className="text-[11px] text-gray-400">输入</p>
@@ -1046,6 +1137,47 @@ export default function SmartChat() {
           )}
         </div>
 
+        <div className="shrink-0 space-y-2 py-2">
+          {quotaSnapshot ? (
+            <Alert
+              className={
+                quotaError
+                  ? "border-red-200 bg-red-50 text-red-800"
+                  : "border-gray-200 bg-white"
+              }
+            >
+              {quotaError ? <AlertCircle /> : <Clock3 />}
+              <AlertTitle className="flex flex-wrap items-center gap-2">
+                今日 Token 额度（UTC）
+                {!quotaSnapshot.enforced || quotaSnapshot.quotaLimitTokens === 0 ? (
+                  <Badge variant="outline">观测模式</Badge>
+                ) : null}
+                {quotaSnapshot.adminExempt ? (
+                  <Badge variant="outline">管理员豁免</Badge>
+                ) : null}
+              </AlertTitle>
+              <AlertDescription>
+                <p>
+                  已消耗 {formatTokens(quotaSnapshot.usedTokens)} · 已预留{" "}
+                  {formatTokens(quotaSnapshot.reservedTokens)} · 剩余{" "}
+                  {quotaSnapshot.remainingTokens == null
+                    ? "不限额"
+                    : formatTokens(quotaSnapshot.remainingTokens)}
+                  {quotaSnapshot.quotaLimitTokens > 0
+                    ? ` / ${formatTokens(quotaSnapshot.quotaLimitTokens)}`
+                    : ""}
+                </p>
+                <p>
+                  UTC 日期 {quotaSnapshot.bucketDate}，重置时间 {new Date(
+                    quotaSnapshot.resetAt
+                  ).toLocaleString()}。
+                  {quotaError ? ` ${quotaError}` : ""}
+                </p>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+        </div>
+
         <form
           ref={composerRef}
           onSubmit={handleSendMessage}
@@ -1053,10 +1185,10 @@ export default function SmartChat() {
         >
           <Textarea
             rows={1}
-            placeholder="输入消息"
+            disabled={isLoading || quotaBlocksSending}
+            placeholder={quotaBlocksSending ? "今日 Token 额度已用尽" : "输入消息"}
             value={inputValue}
             onChange={event => setInputValue(event.target.value)}
-            disabled={isLoading}
             className="max-h-48 min-h-12 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
             onKeyDown={event => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -1068,7 +1200,7 @@ export default function SmartChat() {
           <Button
             type="submit"
             size="icon-lg"
-            disabled={isLoading || !inputValue.trim()}
+            disabled={isLoading || quotaBlocksSending || !inputValue.trim()}
             className="absolute bottom-3 right-3"
             aria-label="发送消息"
             title="发送消息"

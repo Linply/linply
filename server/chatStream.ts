@@ -12,6 +12,10 @@ import {
   enqueueAgentRun,
   getPublicAgentErrorMessage,
 } from "./agentRunExecution";
+import {
+  TOKEN_QUOTA_EXCEEDED_CODE,
+  TokenQuotaExceededError,
+} from "./tokenQuota";
 
 type SsePayload =
   | { type: "reset"; reason: string; attemptCount: number }
@@ -116,6 +120,7 @@ const streamAgentRunEvents = async (
           contextWindowTokens: currentRun.contextWindowTokens ?? 0,
           traceId: currentRun.traceId,
           spanId: currentRun.spanId,
+          usageState: currentRun.usageState,
         },
       });
       return;
@@ -156,11 +161,24 @@ export function registerChatStreamRoutes(app: Express) {
 
       const run = await enqueueAgentRun({
         userId: user.id,
+        userRole: user.role,
         ticketId,
         content,
       });
-      res.status(202).json({ mode: "agent", runId: run.id });
+      res.status(202).json({
+        mode: "agent",
+        runId: run.id,
+        quota: run.quota,
+      });
     } catch (error) {
+      if (error instanceof TokenQuotaExceededError) {
+        res.status(429).json({
+          error: error.message,
+          code: TOKEN_QUOTA_EXCEEDED_CODE,
+          quota: error.quota,
+        });
+        return;
+      }
       res.status(500).json({ error: getPublicAgentErrorMessage(error) });
     }
   });

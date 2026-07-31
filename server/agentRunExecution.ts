@@ -8,10 +8,17 @@ import {
   withActiveSpan,
 } from "./_core/observability";
 import { LLM_TIMEOUT_MS, parseJsonValue } from "./agentUtils";
+import {
+  deriveAgentWriteAuthorization,
+  parseAgentWriteAuthorization,
+} from "./agentPolicy";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
 
+import { TokenQuotaExceededError } from "./tokenQuota";
+
 export const getPublicAgentErrorMessage = (error: unknown) => {
+  if (error instanceof TokenQuotaExceededError) return error.message;
   const message =
     error instanceof Error ? error.message : "发送消息失败，请稍后重试";
 
@@ -45,13 +52,16 @@ export const appendAgentStreamEvent = async (
 
 export async function enqueueAgentRun(input: {
   userId: number;
+  userRole?: "user" | "admin";
   ticketId?: number;
   content: string;
   retryOfRunId?: string;
 }) {
   const telemetry = getActiveTraceContext();
+  const authorization = deriveAgentWriteAuthorization(input.content);
   const run = await db.createAgentRun({
     userId: input.userId,
+    userRole: input.userRole,
     ticketId: input.ticketId,
     input: input.content,
     status: "queued",
@@ -63,9 +73,11 @@ export async function enqueueAgentRun(input: {
       mode: "stream",
       executionMode: ENV.agentExecutionMode,
       telemetry,
+      authorization,
     },
   });
 
+  const quota = await db.getTokenQuota(input.userId, input.userRole);
   await appendAgentStreamEvent(run.id, "meta", {
     relatedKnowledge: [],
     retrieval: null,
@@ -77,7 +89,7 @@ export async function enqueueAgentRun(input: {
       console.error("[Agent] Inline execution failed", { runId: run.id, error });
     });
   }
-  return run;
+  return { ...run, quota };
 }
 
 async function executeAgentRunInternal(
@@ -114,6 +126,10 @@ async function executeAgentRunInternal(
     : undefined;
 
   try {
+    const runMetadata = parseJsonValue<Record<string, unknown>>(run.metadata, {});
+    const authorization =
+      parseAgentWriteAuthorization(runMetadata.authorization) ??
+      deriveAgentWriteAuthorization(run.input);
     const result = await streamAgentChatResponse(
       {
         runId: run.id,
@@ -121,6 +137,7 @@ async function executeAgentRunInternal(
         userRole: user.role,
         ticketId: run.ticketId ?? undefined,
         content: run.input,
+        authorization,
         retryOfRunId: run.retryOfRunId ?? undefined,
         executionFence: worker ? {
           workerId: worker.workerId,
@@ -153,7 +170,7 @@ async function executeAgentRunInternal(
     await appendAgentStreamEvent(run.id, "done", {
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
-      stats: result.runStats,
+      stats: { ...result.runStats, usageState: "actual" },
       attemptCount: run.attemptCount,
     });
   } catch (error) {
@@ -162,14 +179,14 @@ async function executeAgentRunInternal(
         ? new Error("LLM call timed out，请稍后重试")
         : error
     );
-    await db.updateAgentRun(run.id, {
-      status: "failed",
+    await db.finalizeFailedAgentRun({
+      runId: run.id,
+      attemptNumber: run.attemptCount,
       error: message,
-      completedAt: new Date(),
-    }, worker ? {
-      workerId: worker.workerId,
-      attemptCount: run.attemptCount,
-    } : undefined).catch(updateError => {
+      executionFence: worker
+        ? { workerId: worker.workerId, attemptCount: run.attemptCount }
+        : undefined,
+    }).catch(updateError => {
       console.error("[Agent] Failed to mark run failed", updateError);
     });
     await appendAgentStreamEvent(run.id, "error", {
@@ -185,6 +202,7 @@ async function executeAgentRunInternal(
               contextWindowTokens: currentRun.contextWindowTokens,
               traceId: currentRun.traceId,
               spanId: currentRun.spanId,
+              usageState: currentRun.usageState,
             }
           : undefined
       ),

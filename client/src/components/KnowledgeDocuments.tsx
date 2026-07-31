@@ -156,6 +156,41 @@ function formatFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+function SecurityCounts({
+  approved,
+  quarantined,
+  rejected,
+  pending,
+}: {
+  approved: number;
+  quarantined: number;
+  rejected: number;
+  pending: number;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 text-[11px]">
+      <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+        批准 {approved}
+      </Badge>
+      {quarantined > 0 ? (
+        <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+          隔离 {quarantined}
+        </Badge>
+      ) : null}
+      {rejected > 0 ? (
+        <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">
+          拒绝 {rejected}
+        </Badge>
+      ) : null}
+      {pending > 0 ? (
+        <Badge variant="outline" className="border-gray-200 bg-gray-50 text-gray-600">
+          待处理 {pending}
+        </Badge>
+      ) : null}
+    </div>
+  );
+}
+
 export default function KnowledgeDocuments() {
   const utils = trpc.useUtils();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -529,6 +564,14 @@ export default function KnowledgeDocuments() {
                       </div>
                       {renderDeleteButton(doc, total)}
                     </div>
+                    <div className="mt-3">
+                      <SecurityCounts
+                        approved={doc.approvedChunks ?? 0}
+                        quarantined={doc.quarantinedChunks ?? 0}
+                        rejected={doc.rejectedChunks ?? 0}
+                        pending={doc.pendingSecurityChunks ?? 0}
+                      />
+                    </div>
                     {total > 0 ? (
                       <div className="mt-3 space-y-1.5">
                         <Progress value={pct} className="h-1.5" />
@@ -555,6 +598,7 @@ export default function KnowledgeDocuments() {
                     <TableHead className="w-20">类型</TableHead>
                     <TableHead className="w-24">状态</TableHead>
                     <TableHead className="w-48">索引进度</TableHead>
+                    <TableHead className="w-56">安全状态</TableHead>
                     <TableHead className="w-28">上传时间</TableHead>
                     <TableHead className="w-16 text-right">操作</TableHead>
                   </TableRow>
@@ -600,6 +644,14 @@ export default function KnowledgeDocuments() {
                           ) : (
                             <span className="text-xs text-gray-400">—</span>
                           )}
+                        </TableCell>
+                        <TableCell>
+                          <SecurityCounts
+                            approved={doc.approvedChunks ?? 0}
+                            quarantined={doc.quarantinedChunks ?? 0}
+                            rejected={doc.rejectedChunks ?? 0}
+                            pending={doc.pendingSecurityChunks ?? 0}
+                          />
                         </TableCell>
                         <TableCell className="text-xs text-gray-500">
                           {formatDistanceToNow(new Date(doc.createdAt), {

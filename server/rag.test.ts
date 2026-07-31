@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { rankKnowledgeEntriesByKeyword } from "./db";
+import {
+  isKnowledgeEntrySearchable,
+  rankKnowledgeEntriesByKeyword,
+} from "./db";
 
 const entries = [
   {
@@ -48,5 +51,26 @@ describe("keyword RAG ranking", () => {
     const result = rankKnowledgeEntriesByKeyword("密码", entries, 50);
 
     expect(result.map(entry => entry.title)).toEqual(["如何重置密码？"]);
+  });
+
+  it("requires both approved security and completed indexing before retrieval", () => {
+    expect(
+      isKnowledgeEntrySearchable({
+        securityStatus: "approved",
+        embeddingStatus: "pending",
+      })
+    ).toBe(false);
+    expect(
+      isKnowledgeEntrySearchable({
+        securityStatus: "quarantined",
+        embeddingStatus: "completed",
+      })
+    ).toBe(false);
+    expect(
+      isKnowledgeEntrySearchable({
+        securityStatus: "approved",
+        embeddingStatus: "completed",
+      })
+    ).toBe(true);
   });
 });
