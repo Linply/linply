@@ -110,4 +110,3 @@ flowchart LR
 - `server/knowledge/security.test.ts`：常规内容放行、组合型注入隔离、NFKC/零宽混淆、秘密外传、工具滥用和安全 DTO。
 - `server/agentPolicy.test.ts`：明确授权、问句/否定/引用拒绝、目标工单不匹配、哈希过期、历史和知识库不可授权。
 - `server/agentRun.test.ts`：工具层拒绝时无写副作用。
-

@@ -76,9 +76,9 @@ const STATUS_META: Record<
     label: "已完成",
     className: "border-emerald-200 bg-emerald-50 text-emerald-700",
   },
-  failed: { 
+  failed: {
     label: "失败",
-    className: "border-red-200 bg-red-50 text-red-700" 
+    className: "border-red-200 bg-red-50 text-red-700",
   },
   cancelled: {
     label: "已取消",
