@@ -1,6 +1,9 @@
 import "dotenv/config";
+import { configureHostedAgentTracing } from "./agentTracing";
 import { closeSessionCache } from "./sessionCache";
 import { shutdownTelemetry, startTelemetry } from "./telemetry";
+
+configureHostedAgentTracing();
 
 async function bootstrap() {
   startTelemetry("web");

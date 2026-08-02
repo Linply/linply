@@ -1,7 +1,9 @@
 import { Agent, OpenAIProvider, Runner, tool } from "@openai/agents";
 import { createHash, randomUUID } from "node:crypto";
+import OpenAI from "openai";
 import { z } from "zod";
 import { ENV } from "./_core/env";
+import { createOpenAiResponsesCompatibilityFetch } from "./_core/openaiResponsesCompatibility";
 import {
   getActiveTraceContext,
   withActiveSpan,
@@ -435,12 +437,18 @@ const getAgentRunMetadata = (
   ...extra,
 });
 
-const agentModelProvider = () =>
-  new OpenAIProvider({
+const agentModelProvider = () => {
+  const openAIClient = new OpenAI({
     apiKey: ENV.openAiApiKey,
     baseURL: ENV.openAiBaseUrl,
+    fetch: createOpenAiResponsesCompatibilityFetch(),
+  });
+
+  return new OpenAIProvider({
+    openAIClient,
     useResponses: true,
   });
+};
 
 const createAgentRunner = (
   runId?: string,

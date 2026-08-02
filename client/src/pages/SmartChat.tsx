@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import type { AgentEvent } from "@/components/agentTimeline";
 import InlineAgentActivity, {
@@ -475,11 +475,6 @@ export default function SmartChat() {
     };
   }, []);
 
-  const assistantIsStreaming = useMemo(
-    () => messages.some(message => message.isStreaming),
-    [messages]
-  );
-
   const quotaBlocksSending = Boolean(
     quotaSnapshot?.enforced &&
       !quotaSnapshot.adminExempt &&
@@ -842,17 +837,6 @@ export default function SmartChat() {
             <h1 className="text-base font-semibold text-gray-950">智能客服</h1>
             <p className="mt-0.5 text-xs text-gray-500">知识库与工单 Agent</p>
           </div>
-          <div
-            className={`flex h-8 items-center gap-2 text-xs text-gray-500 transition-opacity ${
-              assistantIsStreaming
-                ? "opacity-100"
-                : "pointer-events-none opacity-0"
-            }`}
-            aria-hidden={!assistantIsStreaming}
-          >
-            <Spinner className="size-3.5" />
-            loading...
-          </div>
         </div>
 
         <div
@@ -920,23 +904,19 @@ export default function SmartChat() {
                               key={group.id}
                               items={group.items}
                               visible
-                              runCompleted={!message.isStreaming && !message.error}
+                              runCompleted={
+                                (!message.isStreaming && !message.error) ||
+                                group.id !== streamGroups.at(-1)?.id
+                              }
                             />
                           )
                         )}
-                        <AgentWorkingStatus
-                          visible={
-                            Boolean(message.isStreaming) && !lastTextGroup
-                          }
-                        />
                       </div>
                     ) : message.content ? (
                       <div className="prose prose-sm max-w-none">
                         <Streamdown>{message.content}</Streamdown>
                       </div>
-                    ) : message.error ? null : (
-                      <AgentWorkingStatus visible />
-                    )}
+                    ) : null}
 
                     {message.error ? (
                       <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -1157,6 +1137,10 @@ export default function SmartChat() {
                           </Button>
                         ) : null}
                       </div>
+                    ) : null}
+
+                    {message.role === "assistant" && message.isStreaming ? (
+                      <AgentWorkingStatus visible />
                     ) : null}
                   </div>
                 </div>

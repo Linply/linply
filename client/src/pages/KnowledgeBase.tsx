@@ -51,6 +51,7 @@ import {
   Search,
   ShieldAlert,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -454,10 +455,21 @@ export default function KnowledgeBase() {
               placeholder="搜索标题、关键词或内容"
               value={search}
               onChange={event => setSearch(event.target.value)}
-              className="border-transparent bg-gray-50 pl-9 focus-visible:bg-white"
+              className="border-transparent bg-gray-50 pl-9 pr-9 focus-visible:bg-white"
             />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+                aria-label="清空搜索"
+                title="清空搜索"
+              >
+                <X className="size-4" />
+              </button>
+            ) : null}
           </div>
-          <div className="flex flex-wrap gap-1 border-t border-gray-100 pt-2 sm:border-l sm:border-t-0 sm:pl-2">
+          <div className="flex flex-wrap items-center gap-1 border-gray-100 sm:border-l sm:pl-2">
             {(Object.entries(SECURITY_STATUS_META) as Array<
               [KnowledgeSecurityStatus, (typeof SECURITY_STATUS_META)[KnowledgeSecurityStatus]]
             >).map(([status, meta]) => (
@@ -474,18 +486,10 @@ export default function KnowledgeBase() {
               </Button>
             ))}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSearch("")}
-            disabled={!search}
-          >
-            清空
-          </Button>
         </section>
 
         <div className="grid gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
-          <aside className="h-fit rounded-lg border border-gray-200 bg-white p-4">
+          <aside className="sticky top-[6.75rem] h-fit max-h-[calc(100vh-7.75rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-4">
             <div className="mb-4 flex items-center gap-2">
               <BookOpen className="size-4 text-gray-400" />
               <h2 className="text-sm font-semibold text-gray-900">分类</h2>
