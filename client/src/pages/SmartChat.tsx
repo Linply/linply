@@ -481,6 +481,9 @@ export default function SmartChat() {
       quotaSnapshot.quotaLimitTokens > 0 &&
       quotaSnapshot.remainingTokens === 0
   );
+  const assistantIsStreaming = messages.some(
+    message => message.role === "assistant" && message.isStreaming
+  );
 
   const updateAssistant = (
     assistantId: string,
@@ -843,6 +846,7 @@ export default function SmartChat() {
           ref={messagesViewportRef}
           onScroll={handleMessagesScroll}
           className="min-h-0 flex-1 space-y-6 overflow-y-auto px-1 py-6 sm:px-4"
+          style={{ overflowAnchor: "none" }}
         >
           {messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-center">
@@ -1138,15 +1142,16 @@ export default function SmartChat() {
                         ) : null}
                       </div>
                     ) : null}
-
-                    {message.role === "assistant" && message.isStreaming ? (
-                      <AgentWorkingStatus visible />
-                    ) : null}
                   </div>
                 </div>
               );
             })
           )}
+          {messages.length > 0 ? (
+            <div className="!mt-0 min-h-16 pl-10 pt-2">
+              {assistantIsStreaming ? <AgentWorkingStatus visible /> : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="shrink-0 py-2">
