@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -199,6 +199,9 @@ export default function KnowledgeDocuments() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [multipartUploading, setMultipartUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentStatusesRef = useRef<Map<number, KnowledgeDocumentStatus> | null>(
+    null
+  );
 
   const { data: documents, isLoading } = trpc.knowledge.listDocuments.useQuery(
     undefined,
@@ -219,6 +222,31 @@ export default function KnowledgeDocuments() {
       },
     }
   );
+
+  useEffect(() => {
+    if (!documents) return;
+
+    const previousStatuses = documentStatusesRef.current;
+    documentStatusesRef.current = new Map(
+      documents.map(document => [
+        document.id,
+        document.status as KnowledgeDocumentStatus,
+      ])
+    );
+
+    if (!previousStatuses) return;
+    const indexingCompleted = documents.some(
+      document =>
+        document.status === "completed" &&
+        previousStatuses.get(document.id) !== "completed"
+    );
+    if (!indexingCompleted) return;
+
+    void Promise.all([
+      utils.knowledge.list.invalidate(),
+      utils.knowledge.search.invalidate(),
+    ]);
+  }, [documents, utils]);
 
   const uploadMutation = trpc.knowledge.uploadDocument.useMutation();
   const { data: uploadCapabilities, isLoading: uploadCapabilitiesLoading } =
