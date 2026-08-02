@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
+  boolean,
+  check,
+  date,
   index,
   integer,
   jsonb,
@@ -14,7 +18,10 @@ import {
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
-import { KNOWLEDGE_DOCUMENT_STATUSES } from "../shared/knowledge";
+import {
+  KNOWLEDGE_DOCUMENT_STATUSES,
+  KNOWLEDGE_SECURITY_STATUSES,
+} from "../shared/knowledge";
 
 export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
 export const ticketStatusEnum = pgEnum("ticket_status", [
@@ -42,6 +49,21 @@ export const chatMessageRoleEnum = pgEnum("chat_message_role", [
 export const knowledgeDocumentStatusEnum = pgEnum("knowledge_document_status", [
   ...KNOWLEDGE_DOCUMENT_STATUSES,
 ]);
+/**
+ * 知识条目安全状态：
+ * pending 等待扫描；approved 已通过、允许检索；quarantined 自动隔离、等待人工复核；rejected 人工拒绝、禁止检索。
+ */
+export const knowledgeSecurityStatusEnum = pgEnum("knowledge_security_status", [
+  ...KNOWLEDGE_SECURITY_STATUSES,
+]);
+/**
+ * 知识安全审计动作：
+ * scan 首次自动扫描；rescan 重新扫描；approve 管理员批准；reject 管理员拒绝。
+ */
+export const knowledgeSecurityEventActionEnum = pgEnum(
+  "knowledge_security_event_action",
+  ["scan", "rescan", "approve", "reject"]
+);
 export const agentRunStatusEnum = pgEnum("agent_run_status", [
   "queued",
   "planning",
@@ -56,6 +78,25 @@ export const agentRunStepTypeEnum = pgEnum("agent_run_step_type", [
   "tool_result",
   "final",
   "error",
+]);
+/**
+ * Token attempt 账本状态：
+ * reserved 已预留额度、等待结算；settled 已完成用量结算；released 未产生计费用量并已释放预留。
+ */
+export const agentTokenLedgerStatusEnum = pgEnum("agent_token_ledger_status", [
+  "reserved",
+  "settled",
+  "released",
+]);
+/**
+ * Token 用量可信状态：
+ * reserved 尚未结算；actual 已取得模型真实用量；no_model 明确未调用模型；unknown 已调用模型但无法取得可靠用量，按预留量保守结算。
+ */
+export const agentTokenUsageStateEnum = pgEnum("agent_token_usage_state", [
+  "reserved",
+  "actual",
+  "no_model",
+  "unknown",
 ]);
 
 export const users = pgTable("users", {
@@ -231,9 +272,34 @@ export const knowledgeBase = pgTable(
     documentId: integer("documentId"), // 来源上传文档 ID（手动添加的条目为 null）
     embeddingStatus: varchar("embeddingStatus", { length: 16 })
       .default("pending")
-      .notNull(), // pending | completed | failed
+      .notNull(), // pending | completed | failed | blocked
     conflictWith: integer("conflictWith"), // 检测到内容/标题冲突时，指向最相似的已有条目 ID
     conflictScore: real("conflictScore"), // 与冲突条目的相似度（0~1，标题精确匹配记为 1）
+    securityStatus: knowledgeSecurityStatusEnum("securityStatus")
+      .default("approved")
+      .notNull(), // 安全状态：仅 approved 且 embeddingStatus=completed 的条目可参与检索
+    securityScannerVersion: varchar("securityScannerVersion", { length: 64 })
+      .default("legacy-approved")
+      .notNull(), // 最近一次安全扫描器版本；legacy-approved 表示迁移前存量条目
+    securityContentHash: varchar("securityContentHash", { length: 64 }), // 扫描时内容 SHA-256，用于审核时检测内容是否已变化
+    securityScore: integer("securityScore").default(0).notNull(), // 综合风险分数（0~100），越高表示 Prompt Injection 风险越大
+    securityFindings: jsonb("securityFindings")
+      .$type<
+        Array<{
+          ruleId: string;
+          title: string;
+          explanation: string;
+          score: number;
+          severity: "low" | "medium" | "high" | "critical";
+          evidence: Array<{ text: string; start: number; end: number }>;
+        }>
+      >()
+      .default(sql`'[]'::jsonb`)
+      .notNull(), // 命中的安全规则、分值、严重程度及原文证据位置
+    securityReviewedAt: timestamp("securityReviewedAt", { withTimezone: true }), // 最近一次人工审核时间
+    securityReviewedBy: integer("securityReviewedBy"), // 最近一次人工审核的管理员用户 ID
+    securityReviewReason: text("securityReviewReason"), // 管理员批准或拒绝时填写的审核理由
+    securityScannedAt: timestamp("securityScannedAt", { withTimezone: true }), // 最近一次自动安全扫描时间
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -243,10 +309,15 @@ export const knowledgeBase = pgTable(
   },
   table => ({
     categoryIdx: index("idx_category").on(table.category),
+    securityStatusIdx: index("idx_knowledge_base_securityStatus").on(
+      table.securityStatus
+    ),
     documentIdIdx: index("idx_knowledge_base_documentId").on(table.documentId),
     embeddingIdx: index("idx_knowledge_base_embedding_hnsw")
       .using("hnsw", table.embedding.op("vector_cosine_ops"))
-      .where(sql`${table.embedding} IS NOT NULL`),
+      .where(
+        sql`${table.embedding} IS NOT NULL AND ${table.securityStatus} = 'approved'`
+      ),
   })
 );
 
@@ -264,7 +335,23 @@ export const knowledgeDocuments = pgTable(
     filename: varchar("filename", { length: 255 }).notNull(), // 原始文件名
     fileType: varchar("fileType", { length: 16 }).notNull(), // markdown | csv
     status: knowledgeDocumentStatusEnum("status").default("pending").notNull(),
+    objectKey: text("objectKey"), // 对象存储中的文件唯一地址
+    uploadId: text("uploadId"), // 对象存储的分片上传会话 ID
+    uploadVersion: integer("uploadVersion").default(1).notNull(), // 上传版本，用于忽略过期的解析任务
+    fileSize: bigint("fileSize", { mode: "number" }), // 原始文件总大小（字节）
+    uploadPartSize: bigint("uploadPartSize", { mode: "number" }), // 单个上传分片大小（字节）
+    uploadedBytes: bigint("uploadedBytes", { mode: "number" })
+      .default(0)
+      .notNull(), // 已上传字节数，用于显示进度和断点续传
+    contentType: varchar("contentType", { length: 128 }), // 文件 MIME 类型
+    category: varchar("category", { length: 128 }), // 上传时指定的知识条目分类
     totalChunks: integer("totalChunks").default(0).notNull(), // 解析出的条目总数（进度分母）
+    parsedChunks: integer("parsedChunks").default(0).notNull(), // 已解析并写入的条目数
+    approvedChunks: integer("approvedChunks").default(0).notNull(), // 已通过安全扫描、允许索引和检索的条目数
+    quarantinedChunks: integer("quarantinedChunks").default(0).notNull(), // 被自动扫描隔离、等待人工复核的条目数
+    rejectedChunks: integer("rejectedChunks").default(0).notNull(), // 已被管理员拒绝、禁止检索的条目数
+    pendingSecurityChunks: integer("pendingSecurityChunks").default(0).notNull(), // 尚未完成安全扫描的条目数
+    failureStage: varchar("failureStage", { length: 32 }), // 失败环节，例如 upload 或 parsing
     error: text("error"), // 失败原因
     uploadedBy: integer("uploadedBy"), // 上传者用户 ID
     createdAt: timestamp("createdAt", { withTimezone: true })
@@ -273,6 +360,7 @@ export const knowledgeDocuments = pgTable(
     updatedAt: timestamp("updatedAt", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    completedAt: timestamp("completedAt", { withTimezone: true }),
   },
   table => ({
     statusIdx: index("idx_knowledge_documents_status").on(table.status),
@@ -281,6 +369,58 @@ export const knowledgeDocuments = pgTable(
 
 export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;
 export type InsertKnowledgeDocument = typeof knowledgeDocuments.$inferInsert;
+
+/**
+ * Append-only audit trail for every automated scan and administrator decision.
+ * Application code must only insert rows; no update/delete helper is exposed.
+ */
+export const knowledgeSecurityEvents = pgTable(
+  "knowledge_security_events",
+  {
+    id: serial("id").primaryKey(),
+    knowledgeId: integer("knowledgeId").notNull(), // 关联的知识条目 ID
+    documentId: integer("documentId"), // 来源文档 ID；手工创建条目时为 null
+    action: knowledgeSecurityEventActionEnum("action").notNull(), // 本次审计事件的扫描或人工审核动作
+    fromStatus: knowledgeSecurityStatusEnum("fromStatus"), // 动作执行前的安全状态；首次扫描时可为 null
+    toStatus: knowledgeSecurityStatusEnum("toStatus").notNull(), // 动作执行后的安全状态
+    scannerVersion: varchar("scannerVersion", { length: 64 }).notNull(), // 产生该判断的扫描器版本
+    contentHash: varchar("contentHash", { length: 64 }).notNull(), // 事件发生时知识内容的 SHA-256
+    securityScore: integer("securityScore").default(0).notNull(), // 事件对应的综合风险分数（0~100）
+    findings: jsonb("findings")
+      .$type<
+        Array<{
+          ruleId: string;
+          title: string;
+          explanation: string;
+          score: number;
+          severity: "low" | "medium" | "high" | "critical";
+          evidence: Array<{ text: string; start: number; end: number }>;
+        }>
+      >()
+      .default(sql`'[]'::jsonb`)
+      .notNull(), // 当次扫描命中的规则、分值、严重程度及证据位置快照
+    reason: text("reason"), // 人工审核理由；自动扫描事件通常为 null
+    actorUserId: integer("actorUserId"), // 执行动作的管理员用户 ID；自动扫描时为 null
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    knowledgeIdIdx: index("idx_knowledge_security_events_knowledgeId").on(
+      table.knowledgeId
+    ),
+    documentIdIdx: index("idx_knowledge_security_events_documentId").on(
+      table.documentId
+    ),
+    createdAtIdx: index("idx_knowledge_security_events_createdAt").on(
+      table.createdAt
+    ),
+  })
+);
+
+export type KnowledgeSecurityEvent = typeof knowledgeSecurityEvents.$inferSelect;
+export type InsertKnowledgeSecurityEvent =
+  typeof knowledgeSecurityEvents.$inferInsert;
 
 /**
  * Chat messages table - 聊天记录表
@@ -323,6 +463,45 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 export type InsertChatMessage = typeof chatMessages.$inferInsert;
 
 /**
+ * Per-user UTC-day quota counters. A row is retained even when enforcement is
+ * disabled so reservation and actual usage remain observable.
+ */
+export const agentTokenDailyBuckets = pgTable(
+  "agent_token_daily_buckets",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("userId").notNull(), // 额度所属用户 ID
+    bucketDate: date("bucketDate", { mode: "string" }).notNull(), // UTC 自然日，格式 YYYY-MM-DD
+    quotaLimitTokens: integer("quotaLimitTokens").default(0).notNull(), // 当日 Token 上限；0 表示观测模式下不限额
+    reservedTokens: integer("reservedTokens").default(0).notNull(), // 执行中 Run 已预留、尚未结算的 Token
+    usedTokens: integer("usedTokens").default(0).notNull(), // 当日已结算并计入额度的 Token
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    userBucketUnique: uniqueIndex(
+      "idx_agent_token_daily_buckets_userId_bucketDate"
+    ).on(table.userId, table.bucketDate),
+    bucketDateIdx: index("idx_agent_token_daily_buckets_bucketDate").on(
+      table.bucketDate
+    ),
+    nonNegativeCounters: check(
+      "chk_agent_token_daily_buckets_non_negative",
+      sql`${table.quotaLimitTokens} >= 0 AND ${table.reservedTokens} >= 0 AND ${table.usedTokens} >= 0`
+    ),
+  })
+);
+
+export type AgentTokenDailyBucket =
+  typeof agentTokenDailyBuckets.$inferSelect;
+export type InsertAgentTokenDailyBucket =
+  typeof agentTokenDailyBuckets.$inferInsert;
+
+/**
  * Agent runs table - Agent 执行记录
  * 保存一次 Agent 对话运行的状态、输入、最终输出和错误信息，用于刷新恢复和审计排查
  */
@@ -338,11 +517,29 @@ export const agentRuns = pgTable(
     error: text("error"),
     llmProvider: varchar("llmProvider", { length: 32 }),
     llmModel: varchar("llmModel", { length: 128 }),
+    quotaBucketDate: date("quotaBucketDate", { mode: "string" }), // 本 Run 归属的 UTC 日额度桶；历史 Run 可为 null
+    quotaLimitTokens: integer("quotaLimitTokens").default(0).notNull(), // Run 创建时固化的日额度上限快照
+    quotaEnforced: boolean("quotaEnforced").default(false).notNull(), // Run 创建时是否启用硬额度拦截
+    quotaAdminExempt: boolean("quotaAdminExempt").default(false).notNull(), // Run 创建时管理员是否豁免硬额度
+    reservedTokens: integer("reservedTokens").default(0).notNull(), // 每个 attempt 的预留 Token 数
+    usageState: agentTokenUsageStateEnum("usageState")
+      .default("unknown")
+      .notNull(), // 当前 Run 的用量可信状态，见 agent_token_usage_state
     retryOfRunId: uuid("retryOfRunId"),
     attemptCount: integer("attemptCount").default(0).notNull(),
     leaseOwner: varchar("leaseOwner", { length: 128 }),
     leaseExpiresAt: timestamp("leaseExpiresAt", { withTimezone: true }),
     heartbeatAt: timestamp("heartbeatAt", { withTimezone: true }),
+    traceId: varchar("traceId", { length: 32 }),
+    spanId: varchar("spanId", { length: 16 }),
+    startedAt: timestamp("startedAt", { withTimezone: true }),
+    durationMs: integer("durationMs"),
+    inputTokens: integer("inputTokens"), // 模型报告的输入 Token；unknown 时为 null
+    outputTokens: integer("outputTokens"), // 模型报告的输出 Token；unknown 时为 null
+    totalTokens: integer("totalTokens"), // 模型报告的总 Token；unknown 时为 null
+    countedTokens: integer("countedTokens"), // 实际计入用户额度的 Token；unknown 时按预留量保守计入
+    llmRequestCount: integer("llmRequestCount"), // 本 Run 发起的模型请求次数
+    contextWindowTokens: integer("contextWindowTokens"), // 模型上下文窗口参考值，仅用于展示
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
@@ -360,14 +557,80 @@ export const agentRuns = pgTable(
       table.status,
       table.leaseExpiresAt
     ),
+    traceIdIdx: index("idx_agent_runs_traceId").on(table.traceId),
     retryOfRunIdIdx: index("idx_agent_runs_retryOfRunId").on(
       table.retryOfRunId
+    ),
+    quotaBucketIdx: index("idx_agent_runs_userId_quotaBucketDate").on(
+      table.userId,
+      table.quotaBucketDate
+    ),
+    nonNegativeQuotaSnapshot: check(
+      "chk_agent_runs_quota_snapshot_non_negative",
+      sql`${table.quotaLimitTokens} >= 0 AND ${table.reservedTokens} >= 0 AND (${table.inputTokens} IS NULL OR ${table.inputTokens} >= 0) AND (${table.outputTokens} IS NULL OR ${table.outputTokens} >= 0) AND (${table.totalTokens} IS NULL OR ${table.totalTokens} >= 0) AND (${table.countedTokens} IS NULL OR ${table.countedTokens} >= 0)`
     ),
   })
 );
 
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type InsertAgentRun = typeof agentRuns.$inferInsert;
+
+/** One immutable reservation/usage record per Agent Run execution attempt. */
+export const agentTokenAttemptLedgers = pgTable(
+  "agent_token_attempt_ledgers",
+  {
+    id: serial("id").primaryKey(),
+    runId: uuid("runId")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }), // 对应的 Agent Run；删除 Run 时级联删除账本
+    userId: integer("userId").notNull(), // 额度所属用户 ID
+    attemptNumber: integer("attemptNumber").notNull(), // Run 执行尝试序号，从 1 开始；Worker 重试时递增
+    bucketDate: date("bucketDate", { mode: "string" }).notNull(), // 本 attempt 归属的 UTC 自然日
+    status: agentTokenLedgerStatusEnum("status").default("reserved").notNull(), // 预留额度的生命周期状态
+    usageState: agentTokenUsageStateEnum("usageState")
+      .default("reserved")
+      .notNull(), // 本 attempt 的用量可信状态
+    reservedTokens: integer("reservedTokens").default(0).notNull(), // 模型调用前原子预留的 Token
+    inputTokens: integer("inputTokens"), // 模型报告的输入 Token；unknown 时为 null
+    outputTokens: integer("outputTokens"), // 模型报告的输出 Token；unknown 时为 null
+    totalTokens: integer("totalTokens"), // 模型报告的总 Token；unknown 时为 null
+    countedTokens: integer("countedTokens").default(0).notNull(), // 最终计入日额度的 Token
+    llmProvider: varchar("llmProvider", { length: 32 }), // 执行该 attempt 的模型提供商
+    llmModel: varchar("llmModel", { length: 128 }), // 执行该 attempt 的模型名称
+    modelStartedAt: timestamp("modelStartedAt", { withTimezone: true }), // 发起模型调用前记录；用于区分 no_model 与 unknown
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(), // attempt 预留记录创建时间
+    settledAt: timestamp("settledAt", { withTimezone: true }), // 用量完成结算或预留释放的时间
+  },
+  table => ({
+    runAttemptUnique: uniqueIndex("idx_agent_token_attempt_ledgers_runId_attemptNumber").on(
+      table.runId,
+      table.attemptNumber
+    ),
+    userBucketIdx: index("idx_agent_token_attempt_ledgers_userId_bucketDate").on(
+      table.userId,
+      table.bucketDate
+    ),
+    bucketStatusIdx: index("idx_agent_token_attempt_ledgers_bucketDate_status").on(
+      table.bucketDate,
+      table.status
+    ),
+    validAttempt: check(
+      "chk_agent_token_attempt_ledgers_attempt_positive",
+      sql`${table.attemptNumber} > 0`
+    ),
+    nonNegativeTokens: check(
+      "chk_agent_token_attempt_ledgers_tokens_non_negative",
+      sql`${table.reservedTokens} >= 0 AND ${table.countedTokens} >= 0 AND (${table.inputTokens} IS NULL OR ${table.inputTokens} >= 0) AND (${table.outputTokens} IS NULL OR ${table.outputTokens} >= 0) AND (${table.totalTokens} IS NULL OR ${table.totalTokens} >= 0)`
+    ),
+  })
+);
+
+export type AgentTokenAttemptLedger =
+  typeof agentTokenAttemptLedgers.$inferSelect;
+export type InsertAgentTokenAttemptLedger =
+  typeof agentTokenAttemptLedgers.$inferInsert;
 
 /**
  * Agent run steps table - Agent 执行步骤

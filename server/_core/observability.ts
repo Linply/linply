@@ -1,4 +1,77 @@
+import {
+  context,
+  type Attributes,
+  type Context,
+  type Span,
+  SpanStatusCode,
+  trace,
+  TraceFlags,
+} from "@opentelemetry/api";
+
 const MAX_LOG_FIELD_LENGTH = 600;
+const tracer = trace.getTracer("customer-service-agent");
+
+export type TelemetryTraceContext = {
+  traceId: string;
+  spanId: string;
+  traceFlags: number;
+};
+
+export function getActiveTraceContext(): TelemetryTraceContext | null {
+  const spanContext = trace.getActiveSpan()?.spanContext();
+  if (!spanContext || !trace.isSpanContextValid(spanContext)) return null;
+  return {
+    traceId: spanContext.traceId,
+    spanId: spanContext.spanId,
+    traceFlags: spanContext.traceFlags,
+  };
+}
+
+export function createRemoteTraceContext(
+  value: TelemetryTraceContext | null | undefined
+): Context | undefined {
+  if (!value || !/^[a-f0-9]{32}$/i.test(value.traceId)) return undefined;
+  if (!/^[a-f0-9]{16}$/i.test(value.spanId)) return undefined;
+  return trace.setSpanContext(context.active(), {
+    traceId: value.traceId,
+    spanId: value.spanId,
+    traceFlags:
+      value.traceFlags === TraceFlags.SAMPLED
+        ? TraceFlags.SAMPLED
+        : TraceFlags.NONE,
+    isRemote: true,
+  });
+}
+
+export function withActiveSpan<T>(
+  name: string,
+  attributes: Attributes,
+  operation: (span: Span) => Promise<T>,
+  parentContext?: Context
+) {
+  return tracer.startActiveSpan(
+    name,
+    { attributes },
+    parentContext ?? context.active(),
+    async span => {
+      try {
+        const result = await operation(span);
+        return result;
+      } catch (error) {
+        span.recordException(
+          error instanceof Error ? error : new Error(String(error))
+        );
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        span.end();
+      }
+    }
+  );
+}
 
 const SENSITIVE_PATTERNS: Array<[RegExp, string]> = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]+\b/g, "Bearer [redacted]"],
@@ -81,22 +154,34 @@ export async function observeAsync<T>(
   getMetrics?: (result: T) => Record<string, unknown>
 ) {
   const startedAt = Date.now();
-  try {
-    const result = await operation();
-    logInfo(`[observability] ${label}`, {
-      ...fields,
-      status: "success",
-      latencyMs: Date.now() - startedAt,
-      ...(getMetrics ? getMetrics(result) : {}),
-    });
-    return result;
-  } catch (error) {
-    logWarn(`[observability] ${label}`, {
-      ...fields,
-      status: "error",
-      latencyMs: Date.now() - startedAt,
-      error,
-    });
-    throw error;
-  }
+  const spanAttributes = Object.fromEntries(
+    Object.entries(fields).filter(
+      (entry): entry is [string, string | number | boolean] =>
+        ["string", "number", "boolean"].includes(typeof entry[1])
+    )
+  );
+
+  return withActiveSpan(`operation.${label}`, spanAttributes, async span => {
+    try {
+      const result = await operation();
+      const metrics = getMetrics ? getMetrics(result) : {};
+      const latencyMs = Date.now() - startedAt;
+      span.setAttribute("operation.duration_ms", latencyMs);
+      logInfo(`[observability] ${label}`, {
+        ...fields,
+        status: "success",
+        latencyMs,
+        ...metrics,
+      });
+      return result;
+    } catch (error) {
+      logWarn(`[observability] ${label}`, {
+        ...fields,
+        status: "error",
+        latencyMs: Date.now() - startedAt,
+        error,
+      });
+      throw error;
+    }
+  });
 }

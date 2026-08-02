@@ -1,3 +1,36 @@
+const boundedNumber = (
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+) => {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed)
+    ? Math.min(maximum, Math.max(minimum, parsed))
+    : fallback;
+};
+
+const boundedInteger = (
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+) => {
+  if (value === undefined || !/^-?\d+$/.test(value.trim())) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
+};
+
+const strictBoolean = (value: string | undefined, fallback: boolean) => {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
+};
+
+const MAX_TOKEN_QUOTA = 2_147_483_647;
+
 export const ENV = {
   databaseUrl: process.env.DATABASE_URL ?? "",
   appBaseUrl:
@@ -7,7 +40,63 @@ export const ENV = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
   demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
-  chatMode: process.env.CHAT_MODE ?? "rag",
+  redisUrl: process.env.REDIS_URL ?? "",
+  queueRedisUrl: process.env.QUEUE_REDIS_URL ?? process.env.REDIS_URL ?? "",
+  knowledgeStorageEndpoint: process.env.AWS_ENDPOINT_URL ?? "",
+  knowledgeStorageRegion: process.env.AWS_DEFAULT_REGION ?? "auto",
+  knowledgeStorageBucket: process.env.AWS_S3_BUCKET_NAME ?? "",
+  knowledgeStorageAccessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "",
+  knowledgeStorageSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "",
+  knowledgeStorageForcePathStyle:
+    process.env.AWS_S3_FORCE_PATH_STYLE === "true",
+  knowledgeUploadPartSizeMb: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_PART_SIZE_MB,
+    16,
+    5,
+    5120
+  ),
+  knowledgeUploadUrlTtlSeconds: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_URL_TTL_SECONDS,
+    3600,
+    60,
+    86_400
+  ),
+  knowledgeUploadSessionTtlHours: boundedNumber(
+    process.env.KNOWLEDGE_UPLOAD_SESSION_TTL_HOURS,
+    24,
+    1,
+    168
+  ),
+  knowledgeParseConcurrency: boundedNumber(
+    process.env.KNOWLEDGE_PARSE_CONCURRENCY,
+    1,
+    1,
+    8
+  ),
+  knowledgeEmbedConcurrency: boundedNumber(
+    process.env.KNOWLEDGE_EMBED_CONCURRENCY,
+    2,
+    1,
+    32
+  ),
+  sessionCacheTtlMs: boundedNumber(
+    process.env.SESSION_CACHE_TTL_MS,
+    60_000,
+    1_000,
+    5 * 60_000
+  ),
+  sessionCacheConnectTimeoutMs: boundedNumber(
+    process.env.SESSION_CACHE_CONNECT_TIMEOUT_MS,
+    1_000,
+    100,
+    10_000
+  ),
+  sessionCacheCommandTimeoutMs: boundedNumber(
+    process.env.SESSION_CACHE_COMMAND_TIMEOUT_MS,
+    250,
+    50,
+    5_000
+  ),
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",
   agentExecutionMode:
@@ -15,13 +104,44 @@ export const ENV = {
   agentWorkerPollMs: Number(process.env.AGENT_WORKER_POLL_MS ?? 500),
   agentWorkerLeaseMs: Number(process.env.AGENT_WORKER_LEASE_MS ?? 60_000),
   agentWorkerMaxAttempts: Number(process.env.AGENT_WORKER_MAX_ATTEMPTS ?? 3),
-  llmProvider: process.env.LLM_PROVIDER ?? "manus",
+  agentDailyTokenQuota: boundedInteger(
+    process.env.AGENT_DAILY_TOKEN_QUOTA,
+    0,
+    0,
+    MAX_TOKEN_QUOTA
+  ),
+  agentTokenQuotaEnforcement: strictBoolean(
+    process.env.AGENT_TOKEN_QUOTA_ENFORCEMENT ??
+      process.env.AGENT_DAILY_TOKEN_QUOTA_ENFORCEMENT,
+    false
+  ),
+  agentRunTokenReservation: boundedInteger(
+    process.env.AGENT_RUN_TOKEN_RESERVATION,
+    16_000,
+    0,
+    MAX_TOKEN_QUOTA
+  ),
+  agentTokenQuotaAdminExempt: strictBoolean(
+    process.env.AGENT_TOKEN_QUOTA_ADMIN_EXEMPT,
+    false
+  ),
+  otelEnabled:
+    process.env.OTEL_ENABLED === "true" ||
+    (process.env.OTEL_ENABLED === undefined &&
+      Boolean(
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      )),
+  otelServiceNamespace:
+    process.env.OTEL_SERVICE_NAMESPACE ?? "customer-service-agent",
   isProduction: process.env.NODE_ENV === "production",
-  forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
-  forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-5.5",
+  openAiContextWindowTokens: Math.max(
+    0,
+    Number(process.env.OPENAI_CONTEXT_WINDOW_TOKENS ?? 272_000)
+  ),
   openAiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   openAiEmbeddingBaseUrl:
     process.env.OPENAI_EMBEDDING_BASE_URL ??

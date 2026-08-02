@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   eq,
   and,
@@ -23,17 +24,33 @@ import {
   tickets,
   knowledgeBase,
   knowledgeDocuments,
+  knowledgeSecurityEvents,
   chatMessages,
   ticketNotes,
   agentRuns,
+  agentTokenDailyBuckets,
+  agentTokenAttemptLedgers,
   agentRunSteps,
   agentRunEvents,
   agentToolInvocations,
   agentToolEffects,
 } from "../drizzle/schema";
-import type { KnowledgeDocumentStatus } from "../shared/knowledge";
+import type {
+  KnowledgeDocumentStatus,
+  KnowledgeSecurityStatus,
+} from "../shared/knowledge";
+import type { KnowledgeSecurityFinding } from "./knowledge/security";
 import { createEmbedding, isEmbeddingEnabled } from "./_core/embeddings";
 import { logWarn } from "./_core/observability";
+import { ENV } from "./_core/env";
+import {
+  getTokenSettlement,
+  shouldRejectTokenReservation,
+  TokenQuotaExceededError,
+  type TokenQuotaSnapshot,
+  type TokenUsageState,
+  utcResetAtFromDay,
+} from "./tokenQuota";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _client: ReturnType<typeof postgres> | null = null;
@@ -434,32 +451,72 @@ export async function updateTicket(
 
 // ============ Knowledge Base ============
 
+const searchableKnowledgeCondition = () =>
+  and(
+    eq(knowledgeBase.securityStatus, "approved"),
+    eq(knowledgeBase.embeddingStatus, "completed")
+  );
+
+export const isKnowledgeEntrySearchable = (entry: {
+  securityStatus: KnowledgeSecurityStatus;
+  embeddingStatus: string;
+}) =>
+  entry.securityStatus === "approved" &&
+  entry.embeddingStatus === "completed";
+
 export async function addKnowledgeEntry(data: {
   title: string;
   content: string;
   category: string;
   keywords?: string;
+  securityStatus?: KnowledgeSecurityStatus;
+  securityScannerVersion?: string;
+  securityContentHash?: string;
+  securityFindings?: KnowledgeSecurityFinding[];
+  securityScore?: number;
+  securityScannedAt?: Date;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await db
-    .insert(knowledgeBase)
-    .values({
-      title: data.title,
-      content: data.content,
-      category: data.category,
-      keywords: data.keywords,
-    })
-    .returning({
-      id: knowledgeBase.id,
-      title: knowledgeBase.title,
-      content: knowledgeBase.content,
-      category: knowledgeBase.category,
-      keywords: knowledgeBase.keywords,
-    });
+  return db.transaction(async tx => {
+    const [entry] = await tx
+      .insert(knowledgeBase)
+      .values({
+        title: data.title,
+        content: data.content,
+        category: data.category,
+        keywords: data.keywords,
+        securityStatus: data.securityStatus ?? "approved",
+        securityScannerVersion:
+          data.securityScannerVersion ?? "legacy-approved",
+        securityContentHash: data.securityContentHash,
+        securityFindings: data.securityFindings ?? [],
+        securityScore: data.securityScore ?? 0,
+        securityScannedAt: data.securityScannedAt,
+        embeddingStatus:
+          data.securityStatus && data.securityStatus !== "approved"
+            ? "blocked"
+            : "pending",
+      })
+      .returning();
 
-  return result[0];
+    if (!entry) throw new Error("Failed to create knowledge entry");
+    if (data.securityContentHash && data.securityScannerVersion) {
+      await tx.insert(knowledgeSecurityEvents).values({
+        knowledgeId: entry.id,
+        documentId: entry.documentId,
+        action: "scan",
+        fromStatus: null,
+        toStatus: entry.securityStatus,
+        scannerVersion: data.securityScannerVersion,
+        contentHash: data.securityContentHash,
+        findings: data.securityFindings ?? [],
+        securityScore: data.securityScore ?? 0,
+      });
+    }
+    return entry;
+  });
 }
 
 export async function getKnowledgeByCategory(category: string) {
@@ -469,13 +526,26 @@ export async function getKnowledgeByCategory(category: string) {
   return db
     .select()
     .from(knowledgeBase)
-    .where(eq(knowledgeBase.category, category));
+    .where(
+      and(
+        eq(knowledgeBase.category, category),
+        searchableKnowledgeCondition()
+      )
+    );
 }
 
-export async function listKnowledgeEntries() {
+export async function listKnowledgeEntries(filters?: {
+  securityStatus?: KnowledgeSecurityStatus;
+}) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  if (filters?.securityStatus) {
+    return db
+      .select()
+      .from(knowledgeBase)
+      .where(eq(knowledgeBase.securityStatus, filters.securityStatus));
+  }
   return db.select().from(knowledgeBase);
 }
 
@@ -502,7 +572,12 @@ export async function getKnowledgeByIds(ids: number[]) {
   return db
     .select()
     .from(knowledgeBase)
-    .where(inArray(knowledgeBase.id, uniqueIds));
+    .where(
+      and(
+        inArray(knowledgeBase.id, uniqueIds),
+        searchableKnowledgeCondition()
+      )
+    );
 }
 
 export async function updateKnowledgeEmbedding(
@@ -526,9 +601,18 @@ export async function updateKnowledgeEntry(
     category: string;
     keywords: string | null;
     embedding: number[] | null;
-    embeddingStatus: "pending" | "completed" | "failed";
+    embeddingStatus: "pending" | "completed" | "failed" | "blocked";
     conflictWith: number | null;
     conflictScore: number | null;
+    securityStatus: KnowledgeSecurityStatus;
+    securityScannerVersion: string;
+    securityContentHash: string | null;
+    securityFindings: KnowledgeSecurityFinding[];
+    securityScore: number;
+    securityReviewedAt: Date | null;
+    securityReviewedBy: number | null;
+    securityReviewReason: string | null;
+    securityScannedAt: Date | null;
   }>
 ) {
   const db = await getDb();
@@ -543,6 +627,137 @@ export async function updateKnowledgeEntry(
     .where(eq(knowledgeBase.id, id));
 }
 
+export async function refreshKnowledgeDocumentSecurityCounts(
+  documentId: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [counts] = await db
+    .select({
+      approved:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'approved')`.mapWith(
+          Number
+        ),
+      quarantined:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'quarantined')`.mapWith(
+          Number
+        ),
+      rejected:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'rejected')`.mapWith(
+          Number
+        ),
+      pending:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'pending')`.mapWith(
+          Number
+        ),
+    })
+    .from(knowledgeBase)
+    .where(eq(knowledgeBase.documentId, documentId));
+  await db
+    .update(knowledgeDocuments)
+    .set({
+      approvedChunks: counts?.approved ?? 0,
+      quarantinedChunks: counts?.quarantined ?? 0,
+      rejectedChunks: counts?.rejected ?? 0,
+      pendingSecurityChunks: counts?.pending ?? 0,
+      updatedAt: new Date(),
+    })
+    .where(eq(knowledgeDocuments.id, documentId));
+  return counts ?? { approved: 0, quarantined: 0, rejected: 0, pending: 0 };
+}
+
+export async function appendKnowledgeSecurityEvent(data: {
+  knowledgeId: number;
+  documentId?: number | null;
+  action: "scan" | "rescan" | "approve" | "reject";
+  fromStatus?: KnowledgeSecurityStatus | null;
+  toStatus: KnowledgeSecurityStatus;
+  scannerVersion: string;
+  contentHash: string;
+  findings?: KnowledgeSecurityFinding[];
+  securityScore?: number;
+  reason?: string | null;
+  actorUserId?: number | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [event] = await db
+    .insert(knowledgeSecurityEvents)
+    .values({ ...data, findings: data.findings ?? [], securityScore: data.securityScore ?? 0 })
+    .returning();
+  return event;
+}
+
+export async function getKnowledgeSecurityHistory(knowledgeId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select()
+    .from(knowledgeSecurityEvents)
+    .where(eq(knowledgeSecurityEvents.knowledgeId, knowledgeId))
+    .orderBy(desc(knowledgeSecurityEvents.createdAt));
+}
+
+export async function applyKnowledgeSecurityDecision(data: {
+  knowledgeId: number;
+  expectedContentHash: string;
+  toStatus: "approved" | "rejected";
+  reason: string;
+  actorUserId: number;
+  scannerVersion: string;
+  findings: KnowledgeSecurityFinding[];
+  securityScore: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async tx => {
+    const [current] = await tx
+      .select()
+      .from(knowledgeBase)
+      .where(eq(knowledgeBase.id, data.knowledgeId))
+      .limit(1);
+    if (!current) return { outcome: "not_found" as const };
+    if (current.securityContentHash !== data.expectedContentHash) {
+      return { outcome: "content_changed" as const, entry: current };
+    }
+    const [entry] = await tx
+      .update(knowledgeBase)
+      .set({
+        securityStatus: data.toStatus,
+        securityReviewedAt: new Date(),
+        securityReviewedBy: data.actorUserId,
+        securityReviewReason: data.reason,
+        embedding:
+          data.toStatus === "approved" ? current.embedding : null,
+        embeddingStatus:
+          data.toStatus === "approved" ? "pending" : "blocked",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(knowledgeBase.id, data.knowledgeId),
+          eq(knowledgeBase.securityContentHash, data.expectedContentHash)
+        )
+      )
+      .returning();
+    if (!entry) return { outcome: "content_changed" as const };
+    await tx.insert(knowledgeSecurityEvents).values({
+      knowledgeId: entry.id,
+      documentId: entry.documentId,
+      action: data.toStatus === "approved" ? "approve" : "reject",
+      fromStatus: current.securityStatus,
+      toStatus: data.toStatus,
+      scannerVersion: data.scannerVersion,
+      contentHash: data.expectedContentHash,
+      findings: data.findings,
+      securityScore: data.securityScore,
+      reason: data.reason,
+      actorUserId: data.actorUserId,
+    });
+    return { outcome: "updated" as const, entry };
+  });
+}
+
 // ============ Knowledge Documents（上传文档） ============
 
 export async function createKnowledgeDocument(data: {
@@ -550,6 +765,10 @@ export async function createKnowledgeDocument(data: {
   fileType: string;
   uploadedBy?: number;
   status?: KnowledgeDocumentStatus;
+  fileSize?: number;
+  uploadPartSize?: number;
+  contentType?: string;
+  category?: string;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -561,6 +780,10 @@ export async function createKnowledgeDocument(data: {
       fileType: data.fileType,
       status: data.status ?? "parsing",
       uploadedBy: data.uploadedBy,
+      fileSize: data.fileSize,
+      uploadPartSize: data.uploadPartSize,
+      contentType: data.contentType,
+      category: data.category,
     })
     .returning({ id: knowledgeDocuments.id });
 
@@ -572,7 +795,18 @@ export async function updateKnowledgeDocument(
   data: Partial<{
     status: KnowledgeDocumentStatus;
     totalChunks: number;
+    parsedChunks: number;
+    approvedChunks: number;
+    quarantinedChunks: number;
+    rejectedChunks: number;
+    pendingSecurityChunks: number;
+    uploadedBytes: number;
+    objectKey: string | null;
+    uploadId: string | null;
+    uploadVersion: number;
+    failureStage: string | null;
     error: string | null;
+    completedAt: Date | null;
   }>
 ) {
   const db = await getDb();
@@ -582,6 +816,28 @@ export async function updateKnowledgeDocument(
     .update(knowledgeDocuments)
     .set({ ...data, updatedAt: new Date() })
     .where(eq(knowledgeDocuments.id, id));
+}
+
+export async function updateKnowledgeDocumentStatusIfCurrent(
+  id: number,
+  currentStatus: KnowledgeDocumentStatus,
+  data: Partial<{
+    status: KnowledgeDocumentStatus;
+    failureStage: string | null;
+    error: string | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .update(knowledgeDocuments)
+    .set({ ...data, updatedAt: new Date() })
+    .where(
+      and(
+        eq(knowledgeDocuments.id, id),
+        eq(knowledgeDocuments.status, currentStatus)
+      )
+    );
 }
 
 export async function getKnowledgeDocument(id: number) {
@@ -595,6 +851,24 @@ export async function getKnowledgeDocument(id: number) {
     .limit(1);
 
   return result.length > 0 ? result[0] : null;
+}
+
+export async function listExpiredKnowledgeUploadSessions(
+  before: Date,
+  limit = 100
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select()
+    .from(knowledgeDocuments)
+    .where(
+      and(
+        eq(knowledgeDocuments.status, "uploading"),
+        lt(knowledgeDocuments.updatedAt, before)
+      )
+    )
+    .limit(limit);
 }
 
 export async function listKnowledgeDocuments() {
@@ -638,31 +912,104 @@ export async function addKnowledgeEntriesBatch(
     content: string;
     category: string;
     keywords?: string;
-  }>
+    securityStatus: KnowledgeSecurityStatus;
+    securityScannerVersion: string;
+    securityContentHash: string;
+    securityFindings: KnowledgeSecurityFinding[];
+    securityScore: number;
+    securityScannedAt: Date;
+  }>,
+  embeddingStatus: "pending" | "completed" = "pending"
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   if (entries.length === 0) return [];
 
-  return db
-    .insert(knowledgeBase)
-    .values(
-      entries.map(entry => ({
-        title: entry.title,
-        content: entry.content,
-        category: entry.category,
-        keywords: entry.keywords,
+  const inserted = await db.transaction(async tx => {
+    const rows = await tx
+      .insert(knowledgeBase)
+      .values(
+        entries.map(entry => ({
+          title: entry.title,
+          content: entry.content,
+          category: entry.category,
+          keywords: entry.keywords,
+          documentId,
+          embeddingStatus:
+            entry.securityStatus === "approved" ? embeddingStatus : "blocked",
+          securityStatus: entry.securityStatus,
+          securityScannerVersion: entry.securityScannerVersion,
+          securityContentHash: entry.securityContentHash,
+          securityFindings: entry.securityFindings,
+          securityScore: entry.securityScore,
+          securityScannedAt: entry.securityScannedAt,
+        }))
+      )
+      .returning();
+    await tx.insert(knowledgeSecurityEvents).values(
+      rows.map(row => ({
+        knowledgeId: row.id,
         documentId,
-        embeddingStatus: "pending" as const,
+        action: "scan" as const,
+        fromStatus: null,
+        toStatus: row.securityStatus,
+        scannerVersion: row.securityScannerVersion,
+        contentHash: row.securityContentHash!,
+        findings: row.securityFindings,
+        securityScore: row.securityScore,
       }))
-    )
-    .returning({
-      id: knowledgeBase.id,
-      title: knowledgeBase.title,
-      content: knowledgeBase.content,
-      category: knowledgeBase.category,
-      keywords: knowledgeBase.keywords,
-    });
+    );
+    return rows;
+  });
+  return inserted;
+}
+
+export async function deleteKnowledgeEntriesByDocument(documentId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .delete(knowledgeBase)
+    .where(eq(knowledgeBase.documentId, documentId));
+}
+
+export async function getKnowledgeEntriesByIds(ids: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (ids.length === 0) return [];
+  return db
+    .select()
+    .from(knowledgeBase)
+    .where(
+      and(
+        inArray(knowledgeBase.id, ids),
+        eq(knowledgeBase.securityStatus, "approved")
+      )
+    );
+}
+
+export async function getKnowledgeDocumentEmbeddingCounts(documentId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [counts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      completed:
+        sql<number>`count(*) filter (where ${knowledgeBase.embeddingStatus} = 'completed')`.mapWith(
+          Number
+        ),
+      failed:
+        sql<number>`count(*) filter (where ${knowledgeBase.embeddingStatus} = 'failed')`.mapWith(
+          Number
+        ),
+    })
+    .from(knowledgeBase)
+    .where(
+      and(
+        eq(knowledgeBase.documentId, documentId),
+        eq(knowledgeBase.securityStatus, "approved")
+      )
+    );
+  return counts ?? { total: 0, completed: 0, failed: 0 };
 }
 
 export async function setKnowledgeEntryEmbedding(
@@ -675,12 +1022,17 @@ export async function setKnowledgeEntryEmbedding(
   return db
     .update(knowledgeBase)
     .set({ embedding, embeddingStatus: "completed", updatedAt: new Date() })
-    .where(eq(knowledgeBase.id, id));
+    .where(
+      and(
+        eq(knowledgeBase.id, id),
+        eq(knowledgeBase.securityStatus, "approved")
+      )
+    );
 }
 
 export async function setKnowledgeEntryStatus(
   id: number,
-  status: "pending" | "completed" | "failed"
+  status: "pending" | "completed" | "failed" | "blocked"
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -724,7 +1076,14 @@ export async function detectEntryConflict(
     const rows = await db
       .select({ id: knowledgeBase.id, distance })
       .from(knowledgeBase)
-      .where(and(isNotNull(knowledgeBase.embedding), notSelf, notSameDoc))
+      .where(
+        and(
+          isNotNull(knowledgeBase.embedding),
+          searchableKnowledgeCondition(),
+          notSelf,
+          notSameDoc
+        )
+      )
       .orderBy(distance)
       .limit(1);
 
@@ -745,6 +1104,7 @@ export async function detectEntryConflict(
       and(
         notSelf,
         notSameDoc,
+        searchableKnowledgeCondition(),
         sql`lower(btrim(${knowledgeBase.title})) = lower(btrim(${entry.title}))`
       )
     )
@@ -812,14 +1172,22 @@ async function fallbackSearchKnowledge(query: string, limit: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const entries = await db.select().from(knowledgeBase);
+  const entries = await db
+    .select()
+    .from(knowledgeBase)
+    .where(searchableKnowledgeCondition());
   const ranked = rankKnowledgeEntriesByKeyword(query, entries, limit);
   if (ranked.length > 0) return ranked;
 
   return db
     .select()
     .from(knowledgeBase)
-    .where(like(knowledgeBase.title, `%${query}%`))
+    .where(
+      and(
+        like(knowledgeBase.title, `%${query}%`),
+        searchableKnowledgeCondition()
+      )
+    )
     .limit(limit);
 }
 
@@ -963,7 +1331,12 @@ export async function searchKnowledgeWithMeta(
     const scored = await db
       .select()
       .from(knowledgeBase)
-      .where(isNotNull(knowledgeBase.embedding))
+      .where(
+        and(
+          isNotNull(knowledgeBase.embedding),
+          searchableKnowledgeCondition()
+        )
+      )
       .orderBy(distance, desc(knowledgeBase.updatedAt))
       .limit(limit);
 
@@ -997,7 +1370,10 @@ export async function debugSearchKnowledge(query: string, limit = 5) {
   if (!db) throw new Error("Database not available");
 
   const keywordFallback = async (reason: string) => {
-    const entries = await db.select().from(knowledgeBase);
+    const entries = await db
+      .select()
+      .from(knowledgeBase)
+      .where(searchableKnowledgeCondition());
     const scored = scoreKnowledgeEntriesByKeyword(query, entries, limit);
 
     return {
@@ -1040,7 +1416,12 @@ export async function debugSearchKnowledge(query: string, limit = 5) {
         distance,
       })
       .from(knowledgeBase)
-      .where(isNotNull(knowledgeBase.embedding))
+      .where(
+        and(
+          isNotNull(knowledgeBase.embedding),
+          searchableKnowledgeCondition()
+        )
+      )
       .orderBy(distance, desc(knowledgeBase.updatedAt))
       .limit(limit);
 
@@ -1182,36 +1563,172 @@ export type AgentRunStepType =
   | "final"
   | "error";
 
+const quotaSnapshotFromBucket = (input: {
+  bucketDate: string;
+  quotaLimitTokens: number;
+  reservedTokens: number;
+  usedTokens: number;
+  enforced: boolean;
+  adminExempt: boolean;
+}): TokenQuotaSnapshot => ({
+  ...input,
+  resetAt: utcResetAtFromDay(input.bucketDate),
+  remainingTokens:
+    input.quotaLimitTokens > 0
+      ? Math.max(
+          0,
+          input.quotaLimitTokens - input.usedTokens - input.reservedTokens
+        )
+      : null,
+});
+
+const reserveAgentRunAttempt = async (
+  tx: any,
+  input: {
+    runId: string;
+    userId: number;
+    attemptNumber: number;
+    llmProvider?: string | null;
+    llmModel?: string | null;
+    quotaLimitTokens: number;
+    enforced: boolean;
+    adminExempt: boolean;
+    reservationTokens: number;
+  }
+) => {
+  const [clock] = await tx.execute(sql<{
+    bucket_date: string;
+  }>`select (current_timestamp at time zone 'UTC')::date::text as bucket_date`);
+  const bucketDate = String(clock.bucket_date);
+
+  await tx
+    .insert(agentTokenDailyBuckets)
+    .values({
+      userId: input.userId,
+      bucketDate,
+      quotaLimitTokens: input.quotaLimitTokens,
+    })
+    .onConflictDoNothing();
+
+  const [bucket] = await tx
+    .select()
+    .from(agentTokenDailyBuckets)
+    .where(
+      and(
+        eq(agentTokenDailyBuckets.userId, input.userId),
+        eq(agentTokenDailyBuckets.bucketDate, bucketDate)
+      )
+    )
+    .limit(1)
+    .for("update");
+  if (!bucket) throw new Error("Failed to create token quota bucket");
+
+  const snapshot = quotaSnapshotFromBucket({
+    bucketDate,
+    quotaLimitTokens: input.quotaLimitTokens,
+    reservedTokens: bucket.reservedTokens,
+    usedTokens: bucket.usedTokens,
+    enforced: input.enforced,
+    adminExempt: input.adminExempt,
+  });
+  if (
+    shouldRejectTokenReservation({
+      ...snapshot,
+      requestedTokens: input.reservationTokens,
+    })
+  ) {
+    throw new TokenQuotaExceededError(snapshot);
+  }
+
+  await tx
+    .update(agentTokenDailyBuckets)
+    .set({
+      quotaLimitTokens: input.quotaLimitTokens,
+      reservedTokens: sql`${agentTokenDailyBuckets.reservedTokens} + ${input.reservationTokens}`,
+      updatedAt: new Date(),
+    })
+    .where(eq(agentTokenDailyBuckets.id, bucket.id));
+  await tx.insert(agentTokenAttemptLedgers).values({
+    runId: input.runId,
+    userId: input.userId,
+    attemptNumber: input.attemptNumber,
+    bucketDate,
+    reservedTokens: input.reservationTokens,
+    llmProvider: input.llmProvider,
+    llmModel: input.llmModel,
+  });
+
+  return {
+    bucketDate,
+    quotaLimitTokens: input.quotaLimitTokens,
+    quotaEnforced: input.enforced,
+    quotaAdminExempt: input.adminExempt,
+    reservedTokens: input.reservationTokens,
+    usageState: "reserved" as const,
+  };
+};
+
 export async function createAgentRun(data: {
   userId: number;
+  userRole?: "user" | "admin";
   ticketId?: number;
   input: string;
   status?: AgentRunStatus;
   llmProvider?: string;
   llmModel?: string;
   retryOfRunId?: string;
+  traceId?: string;
+  spanId?: string;
   metadata?: Record<string, unknown>;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await db
-    .insert(agentRuns)
-    .values({
+  return db.transaction(async tx => {
+    const runId = randomUUID();
+    const quotaLimitTokens = ENV.agentDailyTokenQuota;
+    const quotaEnforced = ENV.agentTokenQuotaEnforcement;
+    const quotaAdminExempt =
+      ENV.agentTokenQuotaAdminExempt && data.userRole === "admin";
+    const [created] = await tx
+      .insert(agentRuns)
+      .values({
+        id: runId,
+        userId: data.userId,
+        ticketId: data.ticketId,
+        input: data.input,
+        status: data.status ?? "queued",
+        llmProvider: data.llmProvider,
+        llmModel: data.llmModel,
+        retryOfRunId: data.retryOfRunId,
+        traceId: data.traceId,
+        spanId: data.spanId,
+        attemptCount: 1,
+        metadata: data.metadata
+          ? (JSON.stringify(data.metadata) as any)
+          : undefined,
+      })
+      .returning({ id: agentRuns.id });
+    if (!created) throw new Error("Failed to create Agent Run");
+    const quota = await reserveAgentRunAttempt(tx, {
+      runId,
       userId: data.userId,
-      ticketId: data.ticketId,
-      input: data.input,
-      status: data.status ?? "queued",
+      attemptNumber: 1,
       llmProvider: data.llmProvider,
       llmModel: data.llmModel,
-      retryOfRunId: data.retryOfRunId,
-      metadata: data.metadata
-        ? (JSON.stringify(data.metadata) as any)
-        : undefined,
-    })
-    .returning();
-
-  return result[0];
+      quotaLimitTokens,
+      enforced: quotaEnforced,
+      adminExempt: quotaAdminExempt,
+      reservationTokens: ENV.agentRunTokenReservation,
+    });
+    const [run] = await tx
+      .update(agentRuns)
+      .set(quota)
+      .where(eq(agentRuns.id, runId))
+      .returning();
+    if (!run) throw new Error("Failed to initialize Agent Run quota");
+    return run;
+  });
 }
 
 export async function updateAgentRun(
@@ -1223,6 +1740,17 @@ export async function updateAgentRun(
     llmProvider: string | null;
     llmModel: string | null;
     completedAt: Date | null;
+    startedAt: Date | null;
+    durationMs: number | null;
+    traceId: string | null;
+    spanId: string | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    countedTokens: number | null;
+    usageState: TokenUsageState;
+    llmRequestCount: number | null;
+    contextWindowTokens: number | null;
     metadata: Record<string, unknown> | null;
   }>,
   executionFence?: AgentRunExecutionFence
@@ -1304,14 +1832,86 @@ export async function getAgentRunSteps(runId: string) {
     .orderBy(agentRunSteps.createdAt, agentRunSteps.id);
 }
 
+export async function getAgentRunAttempts(runId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select()
+    .from(agentTokenAttemptLedgers)
+    .where(eq(agentTokenAttemptLedgers.runId, runId))
+    .orderBy(agentTokenAttemptLedgers.attemptNumber);
+}
+
+export async function getTokenQuota(
+  userId: number,
+  userRole?: "user" | "admin"
+): Promise<TokenQuotaSnapshot> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const clockResult = await db.execute(sql<{ bucket_date: string }>`
+    select (current_timestamp at time zone 'UTC')::date::text as bucket_date
+  `);
+  const bucketDate = String(clockResult[0]?.bucket_date);
+  const [bucket] = await db
+    .select()
+    .from(agentTokenDailyBuckets)
+    .where(
+      and(
+        eq(agentTokenDailyBuckets.userId, userId),
+        eq(agentTokenDailyBuckets.bucketDate, bucketDate)
+      )
+    )
+    .limit(1);
+  return quotaSnapshotFromBucket({
+    bucketDate,
+    quotaLimitTokens: ENV.agentDailyTokenQuota,
+    reservedTokens: bucket?.reservedTokens ?? 0,
+    usedTokens: bucket?.usedTokens ?? 0,
+    enforced: ENV.agentTokenQuotaEnforcement,
+    adminExempt: ENV.agentTokenQuotaAdminExempt && userRole === "admin",
+  });
+}
+
 export async function getAgentRunWithSteps(id: string) {
   const run = await getAgentRunById(id);
   if (!run) return null;
 
+  const [steps, attempts] = await Promise.all([
+    getAgentRunSteps(id),
+    getAgentRunAttempts(id),
+  ]);
   return {
     ...run,
-    steps: await getAgentRunSteps(id),
+    steps,
+    attempts,
   };
+}
+
+export async function getAgentRunSummaries(ids: string[]) {
+  if (ids.length === 0) return [];
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select({
+      id: agentRuns.id,
+      status: agentRuns.status,
+      llmProvider: agentRuns.llmProvider,
+      llmModel: agentRuns.llmModel,
+      traceId: agentRuns.traceId,
+      durationMs: agentRuns.durationMs,
+      inputTokens: agentRuns.inputTokens,
+      outputTokens: agentRuns.outputTokens,
+      totalTokens: agentRuns.totalTokens,
+      countedTokens: agentRuns.countedTokens,
+      usageState: agentRuns.usageState,
+      llmRequestCount: agentRuns.llmRequestCount,
+      contextWindowTokens: agentRuns.contextWindowTokens,
+      createdAt: agentRuns.createdAt,
+      completedAt: agentRuns.completedAt,
+    })
+    .from(agentRuns)
+    .where(inArray(agentRuns.id, ids));
 }
 
 export async function getAgentRunRootId(runId: string) {
@@ -1337,9 +1937,190 @@ export type AgentRunExecutionFence = {
   attemptCount: number;
 };
 
+const attemptFenceConditions = (
+  runId: string,
+  attemptNumber: number,
+  executionFence?: AgentRunExecutionFence
+) => {
+  const conditions = [
+    eq(agentRuns.id, runId),
+    eq(agentRuns.attemptCount, attemptNumber),
+  ];
+  if (executionFence) {
+    conditions.push(
+      eq(agentRuns.leaseOwner, executionFence.workerId),
+      gt(agentRuns.leaseExpiresAt, new Date())
+    );
+  }
+  return conditions;
+};
+
+export async function markAgentRunModelStarted(
+  runId: string,
+  attemptNumber: number,
+  executionFence?: AgentRunExecutionFence
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async tx => {
+    const [run] = await tx
+      .select({ id: agentRuns.id })
+      .from(agentRuns)
+      .where(and(...attemptFenceConditions(runId, attemptNumber, executionFence)))
+      .limit(1)
+      .for("update");
+    if (!run) return false;
+    const [ledger] = await tx
+      .update(agentTokenAttemptLedgers)
+      .set({ modelStartedAt: sql`coalesce(${agentTokenAttemptLedgers.modelStartedAt}, current_timestamp)` })
+      .where(
+        and(
+          eq(agentTokenAttemptLedgers.runId, runId),
+          eq(agentTokenAttemptLedgers.attemptNumber, attemptNumber),
+          eq(agentTokenAttemptLedgers.status, "reserved")
+        )
+      )
+      .returning({ id: agentTokenAttemptLedgers.id });
+    return Boolean(ledger);
+  });
+}
+
+const settleAgentRunAttemptInTransaction = async (
+  tx: any,
+  input: {
+    runId: string;
+    attemptNumber: number;
+    usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    executionFence?: AgentRunExecutionFence;
+  }
+) => {
+  const [run] = await tx
+    .select({ id: agentRuns.id })
+    .from(agentRuns)
+    .where(
+      and(
+        ...attemptFenceConditions(
+          input.runId,
+          input.attemptNumber,
+          input.executionFence
+        )
+      )
+    )
+    .limit(1)
+    .for("update");
+  if (!run) return null;
+  const [ledger] = await tx
+    .select()
+    .from(agentTokenAttemptLedgers)
+    .where(
+      and(
+        eq(agentTokenAttemptLedgers.runId, input.runId),
+        eq(agentTokenAttemptLedgers.attemptNumber, input.attemptNumber)
+      )
+    )
+    .limit(1)
+    .for("update");
+  if (!ledger) throw new Error("Agent token attempt ledger not found");
+  if (ledger.status !== "reserved") return ledger.usageState;
+
+  const settlement = getTokenSettlement({
+    reservedTokens: ledger.reservedTokens,
+    modelStarted: Boolean(ledger.modelStartedAt),
+    usage: input.usage,
+  });
+  await tx
+    .update(agentTokenDailyBuckets)
+    .set({
+      reservedTokens: sql`greatest(0, ${agentTokenDailyBuckets.reservedTokens} - ${ledger.reservedTokens})`,
+      usedTokens: sql`${agentTokenDailyBuckets.usedTokens} + ${settlement.countedTokens}`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(agentTokenDailyBuckets.userId, ledger.userId),
+        eq(agentTokenDailyBuckets.bucketDate, ledger.bucketDate)
+      )
+    );
+  await tx
+    .update(agentTokenAttemptLedgers)
+    .set({
+      status: "settled",
+      ...settlement,
+      settledAt: new Date(),
+    })
+    .where(eq(agentTokenAttemptLedgers.id, ledger.id));
+  await tx
+    .update(agentRuns)
+    .set({
+      usageState: settlement.usageState,
+      countedTokens: settlement.countedTokens,
+      inputTokens: settlement.inputTokens,
+      outputTokens: settlement.outputTokens,
+      totalTokens: settlement.totalTokens,
+      updatedAt: new Date(),
+    })
+    .where(eq(agentRuns.id, input.runId));
+  return settlement.usageState;
+};
+
+export async function finalizeFailedAgentRun(data: {
+  runId: string;
+  attemptNumber: number;
+  error: string;
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  durationMs?: number;
+  finalOutput?: string;
+  metadata?: Record<string, unknown>;
+  assistantMessage?: {
+    ticketId?: number;
+    userId: number;
+    content: string;
+    llmProvider: string;
+    llmModel: string;
+  };
+  executionFence?: AgentRunExecutionFence;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async tx => {
+    const usageState = await settleAgentRunAttemptInTransaction(tx, data);
+    if (!usageState) return false;
+    if (data.assistantMessage) {
+      await tx
+        .insert(chatMessages)
+        .values({
+          ticketId: data.assistantMessage.ticketId,
+          userId: data.assistantMessage.userId,
+          role: "assistant",
+          content: data.assistantMessage.content,
+          agentRunId: data.runId,
+          llmProvider: data.assistantMessage.llmProvider,
+          llmModel: data.assistantMessage.llmModel,
+        })
+        .onConflictDoNothing();
+    }
+    await tx
+      .update(agentRuns)
+      .set({
+        status: "failed",
+        error: data.error,
+        finalOutput: data.finalOutput,
+        metadata: data.metadata
+          ? (JSON.stringify(data.metadata) as any)
+          : undefined,
+        durationMs: data.durationMs,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(agentRuns.id, data.runId));
+    return true;
+  });
+}
+
 export async function completeAgentRunWithMessage(data: {
   runId: string;
-  executionFence: AgentRunExecutionFence;
+  attemptNumber: number;
+  executionFence?: AgentRunExecutionFence;
   ticketId?: number;
   userId: number;
   content: string;
@@ -1351,26 +2132,31 @@ export async function completeAgentRunWithMessage(data: {
   }>;
   llmProvider: string;
   llmModel: string;
+  traceId?: string | null;
+  spanId?: string | null;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  llmRequestCount: number;
+  contextWindowTokens: number;
   metadata: Record<string, unknown>;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   return db.transaction(async tx => {
-    const [ownedRun] = await tx
-      .select({ id: agentRuns.id })
-      .from(agentRuns)
-      .where(
-        and(
-          eq(agentRuns.id, data.runId),
-          eq(agentRuns.leaseOwner, data.executionFence.workerId),
-          eq(agentRuns.attemptCount, data.executionFence.attemptCount),
-          gt(agentRuns.leaseExpiresAt, new Date())
-        )
-      )
-      .limit(1)
-      .for("update");
-    if (!ownedRun) return false;
+    const usageState = await settleAgentRunAttemptInTransaction(tx, {
+      runId: data.runId,
+      attemptNumber: data.attemptNumber,
+      executionFence: data.executionFence,
+      usage: {
+        inputTokens: data.inputTokens,
+        outputTokens: data.outputTokens,
+        totalTokens: data.totalTokens,
+      },
+    });
+    if (!usageState) return false;
 
     await tx
       .insert(chatMessages)
@@ -1395,6 +2181,11 @@ export async function completeAgentRunWithMessage(data: {
         error: null,
         llmProvider: data.llmProvider,
         llmModel: data.llmModel,
+        traceId: data.traceId,
+        spanId: data.spanId,
+        durationMs: data.durationMs,
+        llmRequestCount: data.llmRequestCount,
+        contextWindowTokens: data.contextWindowTokens,
         completedAt: new Date(),
         metadata: JSON.stringify(data.metadata) as any,
         updatedAt: new Date(),
@@ -1417,24 +2208,35 @@ export async function claimNextAgentRun(input: {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + input.leaseMs);
 
-    await tx
-      .update(agentRuns)
-      .set({
-        status: "failed",
-        error: "Agent worker lease expired and retry limit was reached",
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        heartbeatAt: null,
-        completedAt: now,
-        updatedAt: now,
-      })
+    const expiredAtLimit = await tx
+      .select()
+      .from(agentRuns)
       .where(
         and(
           inArray(agentRuns.status, ["planning", "running"]),
           lt(agentRuns.leaseExpiresAt, now),
           gte(agentRuns.attemptCount, input.maxAttempts)
         )
-      );
+      )
+      .for("update", { skipLocked: true });
+    for (const expired of expiredAtLimit) {
+      await settleAgentRunAttemptInTransaction(tx, {
+        runId: expired.id,
+        attemptNumber: expired.attemptCount,
+      });
+      await tx
+        .update(agentRuns)
+        .set({
+          status: "failed",
+          error: "Agent worker lease expired and retry limit was reached",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(agentRuns.id, expired.id));
+    }
 
     const [run] = await tx
       .select()
@@ -1457,7 +2259,13 @@ export async function claimNextAgentRun(input: {
 
     if (!run) return null;
 
-    if (run.status === "planning" || run.status === "running") {
+    const isRecovery = run.status === "planning" || run.status === "running";
+    const nextAttemptNumber = isRecovery ? run.attemptCount + 1 : run.attemptCount;
+    if (isRecovery) {
+      await settleAgentRunAttemptInTransaction(tx, {
+        runId: run.id,
+        attemptNumber: run.attemptCount,
+      });
       await tx
         .update(agentToolInvocations)
         .set({
@@ -1475,11 +2283,46 @@ export async function claimNextAgentRun(input: {
         );
     }
 
+    if (isRecovery) {
+      try {
+        const quota = await reserveAgentRunAttempt(tx, {
+          runId: run.id,
+          userId: run.userId,
+          attemptNumber: nextAttemptNumber,
+          llmProvider: run.llmProvider,
+          llmModel: run.llmModel,
+          quotaLimitTokens: run.quotaLimitTokens,
+          enforced: run.quotaEnforced,
+          adminExempt: run.quotaAdminExempt,
+          reservationTokens: run.reservedTokens,
+        });
+        await tx
+          .update(agentRuns)
+          .set(quota)
+          .where(eq(agentRuns.id, run.id));
+      } catch (error) {
+        if (!(error instanceof TokenQuotaExceededError)) throw error;
+        await tx
+          .update(agentRuns)
+          .set({
+            status: "failed",
+            error: "TOKEN_QUOTA_EXCEEDED_ON_RETRY",
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(agentRuns.id, run.id));
+        return null;
+      }
+    }
+
     const [claimed] = await tx
       .update(agentRuns)
       .set({
         status: "planning",
-        attemptCount: sql`${agentRuns.attemptCount} + 1`,
+        attemptCount: nextAttemptNumber,
         leaseOwner: input.workerId,
         leaseExpiresAt,
         heartbeatAt: now,

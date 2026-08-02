@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import type { AgentEvent } from "@/components/agentTimeline";
 import InlineAgentActivity, {
@@ -15,16 +15,33 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { trpc } from "@/lib/trpc";
+import type { TokenQuotaSnapshot, TokenUsageState } from "@shared/types";
 import {
   AlertCircle,
   Bot,
+  ChevronDown,
+  Clock3,
   ClipboardList,
   Copy,
   ExternalLink,
+  MoreHorizontal,
   RefreshCcw,
   Send,
 } from "lucide-react";
@@ -53,6 +70,36 @@ type RetrievalStatus = {
   fallbackReason?: string | null;
 };
 
+type MessageRunStats = {
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  llmRequestCount: number;
+  contextWindowTokens: number;
+  usageState?: TokenUsageState;
+  llmModel?: string | null;
+  traceId?: string | null;
+};
+
+type ChatStartPayload =
+  | { mode: "agent"; runId: string; quota: TokenQuotaSnapshot }
+  | {
+      error: string;
+      code?: string;
+      quota?: TokenQuotaSnapshot;
+    };
+
+class TokenQuotaError extends Error {
+  constructor(
+    message: string,
+    readonly quota?: TokenQuotaSnapshot
+  ) {
+    super(message);
+    this.name = "TokenQuotaError";
+  }
+}
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -65,7 +112,9 @@ type ChatMessage = {
   structuredOutput?: StructuredOutput;
   retrieval?: RetrievalStatus | null;
   error?: string;
+  quotaExceeded?: boolean;
   sourcePrompt?: string;
+  runStats?: MessageRunStats | null;
 };
 
 type ChatStreamItem =
@@ -149,6 +198,36 @@ const trimText = (value: string, maxLength: number) => {
   return `${compact.slice(0, maxLength - 1)}…`;
 };
 
+const formatDuration = (durationMs?: number | null) => {
+  if (typeof durationMs !== "number") return "未记录";
+  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const totalSeconds = Math.round(durationMs / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+};
+
+const formatTokens = (tokens?: number | null) => {
+  if (tokens == null) return "未知";
+  return new Intl.NumberFormat("zh-CN", {
+    notation: tokens >= 1_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(tokens);
+};
+
+const USAGE_STATE_LABELS: Record<TokenUsageState, string> = {
+  reserved: "执行中预留",
+  actual: "实际模型用量",
+  no_model: "模型未启动",
+  unknown: "实际用量未知（按预留计数）",
+};
+
+const getContextUsagePercent = (stats?: MessageRunStats | null) => {
+  if (!stats?.contextWindowTokens || stats.totalTokens == null) return 0;
+  return Math.min(100, (stats.totalTokens / stats.contextWindowTokens) * 100);
+};
+
 const getPreviousUserPrompt = (messages: ChatMessage[], messageId: string) => {
   const index = messages.findIndex(message => message.id === messageId);
   for (let cursor = index - 1; cursor >= 0; cursor--) {
@@ -210,8 +289,6 @@ const shouldShowCreateTicket = (message: ChatMessage) => {
 
   if (message.structuredOutput?.shouldCreateTicket) return true;
 
-  // RAG mode does not emit structured output, so use its retrieval status as
-  // the fallback signal for answers that need human follow-up.
   return Boolean(
     message.retrieval &&
       (message.retrieval.degraded || message.relatedKnowledge?.length === 0)
@@ -245,6 +322,10 @@ export default function SmartChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [quotaSnapshot, setQuotaSnapshot] = useState<TokenQuotaSnapshot | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [quotaDetailsOpen, setQuotaDetailsOpen] = useState(false);
+  const quotaDetailsRef = useRef<HTMLDivElement>(null);
   const [ticketDraft, setTicketDraft] = useState<{
     sourceMessageId: string;
     title: string;
@@ -258,7 +339,33 @@ export default function SmartChat() {
   const composerScrollFrameRef = useRef<number | null>(null);
 
   const { data: chatHistory } = trpc.chat.getHistory.useQuery({});
+  const { data: tokenQuota } = trpc.agentRuns.getTokenQuota.useQuery();
   const createTicketMutation = trpc.tickets.create.useMutation();
+
+  useEffect(() => {
+    if (tokenQuota) setQuotaSnapshot(tokenQuota);
+  }, [tokenQuota]);
+
+  useEffect(() => {
+    if (!quotaDetailsOpen) return;
+
+    const closeOnOutsideInteraction = (event: PointerEvent | FocusEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !quotaDetailsRef.current?.contains(target)
+      ) {
+        setQuotaDetailsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsideInteraction);
+    document.addEventListener("focusin", closeOnOutsideInteraction);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideInteraction);
+      document.removeEventListener("focusin", closeOnOutsideInteraction);
+    };
+  }, [quotaDetailsOpen]);
 
   useEffect(() => {
     if (!chatHistory) return;
@@ -268,6 +375,19 @@ export default function SmartChat() {
       content: msg.content,
       relatedKnowledge: msg.relatedKnowledge ?? [],
       runId: msg.agentRunId ?? undefined,
+      runStats: msg.runStats
+        ? {
+            durationMs: msg.runStats.durationMs ?? null,
+            inputTokens: msg.runStats.inputTokens ?? null,
+            outputTokens: msg.runStats.outputTokens ?? null,
+            totalTokens: msg.runStats.totalTokens ?? null,
+            llmRequestCount: msg.runStats.llmRequestCount ?? 0,
+            contextWindowTokens: msg.runStats.contextWindowTokens ?? 0,
+            usageState: msg.runStats.usageState,
+            llmModel: msg.runStats.llmModel ?? msg.llmModel,
+            traceId: msg.runStats.traceId,
+          }
+        : null,
     }));
 
     setMessages(previousMessages =>
@@ -290,6 +410,8 @@ export default function SmartChat() {
               structuredOutput: liveMessage.structuredOutput,
               retrieval: liveMessage.retrieval,
               sourcePrompt: liveMessage.sourcePrompt,
+              runStats: historyMessage.runStats ?? liveMessage.runStats,
+              isStreaming: false,
             }
           : historyMessage;
       })
@@ -353,9 +475,14 @@ export default function SmartChat() {
     };
   }, []);
 
-  const assistantIsStreaming = useMemo(
-    () => messages.some(message => message.isStreaming),
-    [messages]
+  const quotaBlocksSending = Boolean(
+    quotaSnapshot?.enforced &&
+      !quotaSnapshot.adminExempt &&
+      quotaSnapshot.quotaLimitTokens > 0 &&
+      quotaSnapshot.remainingTokens === 0
+  );
+  const assistantIsStreaming = messages.some(
+    message => message.role === "assistant" && message.isStreaming
   );
 
   const updateAssistant = (
@@ -380,7 +507,7 @@ export default function SmartChat() {
 
   const sendMessage = async (content: string) => {
     const userMessage = content.trim();
-    if (!userMessage || isLoading) return;
+    if (!userMessage || isLoading || quotaBlocksSending) return;
 
     const now = Date.now();
     const assistantId = `${now + 1}`;
@@ -412,12 +539,33 @@ export default function SmartChat() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: userMessage }),
       });
-      const startPayload = await startResponse.json().catch(() => ({}));
+      const startPayload = (await startResponse
+        .json()
+        .catch(() => ({}))) as ChatStartPayload;
       if (!startResponse.ok) {
-        throw new Error(startPayload.error || "发送消息失败，请稍后重试");
+        if (
+          startResponse.status === 429 &&
+          "code" in startPayload &&
+          startPayload.code === "TOKEN_QUOTA_EXCEEDED"
+        ) {
+          if (startPayload.quota) setQuotaSnapshot(startPayload.quota);
+          setQuotaError(startPayload.error);
+          throw new TokenQuotaError(startPayload.error, startPayload.quota);
+        }
+        throw new Error(
+          "error" in startPayload
+            ? startPayload.error
+            : "发送消息失败，请稍后重试"
+        );
       }
 
-      let runId: string | undefined = startPayload.runId ?? undefined;
+      if (!("runId" in startPayload)) {
+        throw new Error("未创建 Agent Run，请稍后重试");
+      }
+      setQuotaSnapshot(startPayload.quota);
+      setQuotaError(null);
+      void utils.agentRuns.getTokenQuota.setData(undefined, startPayload.quota);
+      let runId: string | undefined = startPayload.runId;
       let lastEventId = 0;
       let receivedContent = false;
       let receivedDone = false;
@@ -511,6 +659,12 @@ export default function SmartChat() {
           updateAssistant(assistantId, message => ({
             ...message,
             isStreaming: false,
+            runStats: payload.stats
+              ? {
+                  ...payload.stats,
+                  llmModel: payload.llmModel ?? message.runStats?.llmModel,
+                }
+              : message.runStats,
           }));
           return;
         }
@@ -549,18 +703,13 @@ export default function SmartChat() {
         if (buffer.trim()) handleEvent(buffer);
       };
 
+      if (!runId) {
+        throw new Error("未创建 Agent Run，请稍后重试");
+      }
+      const streamRunId = runId;
       const streamUrl = () =>
-        runId
-          ? `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`
-          : "/api/chat/stream";
-      const initialResponse =
-        startPayload.mode === "agent" && runId
-          ? await fetch(streamUrl())
-          : await fetch("/api/chat/stream", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ content: userMessage }),
-            });
+        `/api/chat/stream/${encodeURIComponent(streamRunId)}?afterSeq=${lastEventId}`;
+      const initialResponse = await fetch(streamUrl());
 
       let connectionError: unknown;
       try {
@@ -594,15 +743,43 @@ export default function SmartChat() {
       updateAssistant(assistantId, message => ({
         ...message,
         isStreaming: false,
+        runStats:
+          message.runStats ??
+          ({
+            durationMs: Date.now() - now,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            llmRequestCount: 0,
+            contextWindowTokens: 0,
+            usageState: "unknown",
+          } satisfies MessageRunStats),
       }));
-      await utils.chat.getHistory.invalidate();
+      await Promise.all([
+        utils.chat.getHistory.invalidate(),
+        utils.agentRuns.getTokenQuota.invalidate(),
+      ]);
     } catch (error: any) {
+      const isQuotaError = error instanceof TokenQuotaError;
       updateAssistant(assistantId, message => ({
         ...message,
         isStreaming: false,
         error: error?.message || "发送消息失败，请稍后重试",
+        quotaExceeded: isQuotaError,
+        runStats:
+          message.runStats ??
+          ({
+            durationMs: Date.now() - now,
+            inputTokens: null,
+            outputTokens: null,
+            totalTokens: null,
+            llmRequestCount: 0,
+            contextWindowTokens: 0,
+            usageState: "unknown",
+          } satisfies MessageRunStats),
       }));
-      toast.error(error?.message || "发送消息失败，请稍后重试");
+      if (!isQuotaError) toast.error(error?.message || "发送消息失败，请稍后重试");
+      await utils.agentRuns.getTokenQuota.invalidate();
     } finally {
       setIsLoading(false);
     }
@@ -663,23 +840,13 @@ export default function SmartChat() {
             <h1 className="text-base font-semibold text-gray-950">智能客服</h1>
             <p className="mt-0.5 text-xs text-gray-500">知识库与工单 Agent</p>
           </div>
-          <div
-            className={`flex h-8 items-center gap-2 text-xs text-gray-500 transition-opacity ${
-              assistantIsStreaming
-                ? "opacity-100"
-                : "pointer-events-none opacity-0"
-            }`}
-            aria-hidden={!assistantIsStreaming}
-          >
-            <Spinner className="size-3.5" />
-            loading...
-          </div>
         </div>
 
         <div
           ref={messagesViewportRef}
           onScroll={handleMessagesScroll}
           className="min-h-0 flex-1 space-y-6 overflow-y-auto px-1 py-6 sm:px-4"
+          style={{ overflowAnchor: "none" }}
         >
           {messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-center">
@@ -741,23 +908,19 @@ export default function SmartChat() {
                               key={group.id}
                               items={group.items}
                               visible
-                              runCompleted={!message.isStreaming && !message.error}
+                              runCompleted={
+                                (!message.isStreaming && !message.error) ||
+                                group.id !== streamGroups.at(-1)?.id
+                              }
                             />
                           )
                         )}
-                        <AgentWorkingStatus
-                          visible={
-                            Boolean(message.isStreaming) && !lastTextGroup
-                          }
-                        />
                       </div>
                     ) : message.content ? (
                       <div className="prose prose-sm max-w-none">
                         <Streamdown>{message.content}</Streamdown>
                       </div>
-                    ) : message.error ? null : (
-                      <AgentWorkingStatus visible />
-                    )}
+                    ) : null}
 
                     {message.error ? (
                       <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -765,7 +928,7 @@ export default function SmartChat() {
                           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                           <span>{message.error}</span>
                         </div>
-                        {message.sourcePrompt ? (
+                        {message.sourcePrompt && !message.quotaExceeded ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -831,28 +994,117 @@ export default function SmartChat() {
                     ) : null}
 
                     {message.role === "assistant" && message.runId ? (
-                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
-                        <span>Agent Run</span>
-                        <code className="max-w-full truncate font-mono">
-                          {message.runId}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => copyRunId(message.runId!)}
-                          aria-label="复制 Run ID"
-                          title="复制 Run ID"
-                          className="rounded-sm p-0.5 hover:bg-gray-100 hover:text-gray-600"
-                        >
-                          <Copy className="size-2.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setLocation(`/runs/${message.runId}`)}
-                          className="inline-flex items-center gap-0.5 hover:text-gray-600 hover:underline"
-                        >
-                          详情
-                          <ExternalLink className="size-2.5" />
-                        </button>
+                      <div className="mt-4 flex h-9 items-center justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
+                        <span className="inline-flex items-center gap-1.5 tabular-nums">
+                          <Clock3 className="size-4" />
+                          {message.isStreaming
+                            ? "运行中"
+                            : formatDuration(message.runStats?.durationMs)}
+                        </span>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="查看运行统计"
+                              title="查看运行统计"
+                              className="flex size-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            sideOffset={8}
+                            className="w-[min(22rem,calc(100vw-2rem))] p-0"
+                          >
+                            <div className="space-y-3 px-4 py-4 text-sm">
+                              <div className="flex items-start justify-between gap-4">
+                                <span className="text-gray-500">模型</span>
+                                <span className="min-w-0 break-all text-right font-mono text-xs font-medium text-gray-900">
+                                  {message.runStats?.llmModel ?? "未记录"}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-gray-500">模型请求</span>
+                                <span className="font-medium tabular-nums text-gray-900">
+                                  {message.runStats?.llmRequestCount ?? 0} 次
+                                </span>
+                              </div>
+                              {message.runStats?.usageState ? (
+                                <div className="flex items-center justify-between gap-4">
+                                  <span className="text-gray-500">用量状态</span>
+                                  <Badge
+                                    variant="outline"
+                                    className={
+                                      message.runStats.usageState === "unknown"
+                                        ? "border-amber-200 bg-amber-50 text-amber-700"
+                                        : "bg-gray-50 text-gray-700"
+                                    }
+                                  >
+                                    {USAGE_STATE_LABELS[message.runStats.usageState]}
+                                  </Badge>
+                                </div>
+                              ) : null}
+                              <div className="grid grid-cols-3 gap-3 border-y border-gray-100 py-3 text-center">
+                                <div>
+                                  <p className="text-[11px] text-gray-400">输入</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.inputTokens)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[11px] text-gray-400">输出</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.outputTokens)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[11px] text-gray-400">总计</p>
+                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                    {formatTokens(message.runStats?.totalTokens)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div>
+                                <div className="flex items-center justify-between gap-4">
+                                  <span className="text-gray-500">用量 / 上下文窗口</span>
+                                  <span className="font-medium tabular-nums text-gray-900">
+                                    {getContextUsagePercent(message.runStats).toFixed(1)}%{` `}
+                                    <span className="font-normal text-gray-400">
+                                      ({formatTokens(message.runStats?.totalTokens)} /{` `}
+                                      {formatTokens(message.runStats?.contextWindowTokens)})
+                                    </span>
+                                  </span>
+                                </div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-gray-100">
+                                  <div
+                                    className="h-full bg-emerald-500"
+                                    style={{
+                                      width: `${getContextUsagePercent(message.runStats)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                            <DropdownMenuSeparator className="m-0" />
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                setLocation(`/runs/${message.runId}`)
+                              }
+                              className="mx-1 my-1"
+                            >
+                              <ExternalLink className="size-4" />
+                              查看完整 Run
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => copyRunId(message.runId!)}
+                              className="mx-1 mb-1"
+                            >
+                              <Copy className="size-4" />
+                              复制 Run ID
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     ) : null}
 
@@ -895,19 +1147,25 @@ export default function SmartChat() {
               );
             })
           )}
+          {messages.length > 0 ? (
+            <div className="!mt-0 min-h-16 pl-10 pt-2">
+              {assistantIsStreaming ? <AgentWorkingStatus visible /> : null}
+            </div>
+          ) : null}
         </div>
 
-        <form
-          ref={composerRef}
-          onSubmit={handleSendMessage}
-          className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
-        >
+        <div className="shrink-0 py-2">
+          <form
+            ref={composerRef}
+            onSubmit={handleSendMessage}
+            className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
+          >
           <Textarea
             rows={1}
-            placeholder="输入消息"
+            disabled={isLoading || quotaBlocksSending}
+            placeholder={quotaBlocksSending ? "今日 Token 额度已用尽" : "输入消息"}
             value={inputValue}
             onChange={event => setInputValue(event.target.value)}
-            disabled={isLoading}
             className="max-h-48 min-h-12 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
             onKeyDown={event => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -916,10 +1174,75 @@ export default function SmartChat() {
               }
             }}
           />
+          {quotaSnapshot ? (
+            <Collapsible
+              ref={quotaDetailsRef}
+              open={quotaDetailsOpen}
+              onOpenChange={setQuotaDetailsOpen}
+              className="absolute bottom-3 left-3 max-w-[calc(100%-5.5rem)]"
+            >
+              <CollapsibleTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={
+                    quotaError
+                      ? "h-10 gap-1.5 px-2 text-red-700 hover:bg-red-50 hover:text-red-800"
+                      : "h-10 gap-1.5 px-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                  }
+                  aria-label={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
+                  title={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
+                >
+                  {quotaError ? <AlertCircle className="h-4 w-4" /> : null}
+                  <span className="truncate text-xs sm:text-sm">
+                    Token {quotaSnapshot.remainingTokens == null
+                      ? `已用 ${formatTokens(quotaSnapshot.usedTokens)}`
+                      : `剩余 ${formatTokens(quotaSnapshot.remainingTokens)}`}
+                  </span>
+                  <ChevronDown
+                    className={`h-4 w-4 shrink-0 transition-transform ${
+                      quotaDetailsOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="absolute bottom-12 left-0 z-20 w-[min(22rem,calc(100vw-3rem))] rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600 shadow-lg">
+                <div className="flex flex-wrap items-center gap-2 font-medium text-gray-900">
+                  今日 Token 额度（UTC）
+                  {!quotaSnapshot.enforced || quotaSnapshot.quotaLimitTokens === 0 ? (
+                    <Badge variant="outline">观测模式</Badge>
+                  ) : null}
+                  {quotaSnapshot.adminExempt ? (
+                    <Badge variant="outline">管理员豁免</Badge>
+                  ) : null}
+                </div>
+                <div className="mt-2 space-y-1">
+                  <p>
+                    已消耗 {formatTokens(quotaSnapshot.usedTokens)} · 已预留{" "}
+                    {formatTokens(quotaSnapshot.reservedTokens)}
+                  </p>
+                  <p>
+                    剩余 {quotaSnapshot.remainingTokens == null
+                      ? "不限额"
+                      : formatTokens(quotaSnapshot.remainingTokens)}
+                    {quotaSnapshot.quotaLimitTokens > 0
+                      ? ` / ${formatTokens(quotaSnapshot.quotaLimitTokens)}`
+                      : ""}
+                  </p>
+                  <p>
+                    UTC 日期 {quotaSnapshot.bucketDate}，重置时间{" "}
+                    {new Date(quotaSnapshot.resetAt).toLocaleString()}。
+                  </p>
+                  {quotaError ? <p className="text-red-700">{quotaError}</p> : null}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
           <Button
             type="submit"
             size="icon-lg"
-            disabled={isLoading || !inputValue.trim()}
+            disabled={isLoading || quotaBlocksSending || !inputValue.trim()}
             className="absolute bottom-3 right-3"
             aria-label="发送消息"
             title="发送消息"
@@ -930,7 +1253,8 @@ export default function SmartChat() {
               <Send className="h-4 w-4" />
             )}
           </Button>
-        </form>
+          </form>
+        </div>
       </div>
 
       <Dialog

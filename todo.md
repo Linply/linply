@@ -12,9 +12,8 @@
 
 ## 阶段 1：接入 OpenAI LLM（先不引入 Agent SDK）
 
-- [x] 增加 OpenAI 环境变量：`LLM_PROVIDER`、`OPENAI_API_KEY`、`OPENAI_MODEL`
-- [x] 保留 Manus Forge 配置作为可选 fallback，不直接删除旧实现
-- [x] 将 `server/_core/llm.ts` 拆成 provider 分流：`manus` / `openai`
+- [x] 增加 OpenAI 环境变量：`OPENAI_API_KEY`、`OPENAI_MODEL`
+- [x] 移除旧 Forge fallback，仅保留 OpenAI Agent
 - [x] 使用 OpenAI Responses API 实现 `invokeLLM` 的 OpenAI 路径
 - [x] 统一 OpenAI 返回结果为当前 `InvokeResult` 结构，减少上层改动
 - [x] 给 LLM 调用增加清晰错误信息：缺少 key、模型错误、限流、网络失败
@@ -92,7 +91,6 @@
 
 - [x] 为 OpenAI provider 增加单元测试，mock Responses API 返回
 - [x] 为 embedding / cosine similarity 增加单元测试
-- [x] 为 `chat.sendMessage` 增加集成测试：召回、回复、保存消息
 - [x] 为 Agent tool 入参校验、工具执行成功/失败、工具结果脱敏增加单元测试
 - [x] 为结构化输出增加测试：schema 校验成功、缺字段兜底、模型修复失败兜底
 - [x] 为 Agent Run 状态流转增加测试：创建、执行中、失败、重试、完成、刷新恢复

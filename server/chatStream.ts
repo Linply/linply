@@ -1,12 +1,11 @@
 import type { Express, Request, Response } from "express";
-import { ENV } from "./_core/env";
-import { streamLLM } from "./_core/llm";
 import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import type { KnowledgeRetrieval } from "./db";
 import { getTicketForUser } from "./accessControl";
 import {
   type AgentEvent,
+  type AgentRunStats,
   type StructuredAgentOutput,
 } from "./agentService";
 import {
@@ -14,9 +13,9 @@ import {
   getPublicAgentErrorMessage,
 } from "./agentRunExecution";
 import {
-  LLM_TIMEOUT_MS,
-  prepareChatResponse,
-} from "./chatService";
+  TOKEN_QUOTA_EXCEEDED_CODE,
+  TokenQuotaExceededError,
+} from "./tokenQuota";
 
 type SsePayload =
   | { type: "reset"; reason: string; attemptCount: number }
@@ -35,8 +34,19 @@ type SsePayload =
       event: AgentEvent;
       attemptCount?: number;
     }
-  | { type: "done"; llmProvider: string; llmModel?: string; attemptCount?: number }
-  | { type: "error"; message: string; attemptCount?: number };
+  | {
+      type: "done";
+      llmProvider: string;
+      llmModel?: string;
+      stats?: AgentRunStats;
+      attemptCount?: number;
+    }
+  | {
+      type: "error";
+      message: string;
+      stats?: Partial<AgentRunStats>;
+      attemptCount?: number;
+    };
 
 const writeSse = (res: Response, payload: SsePayload, eventId?: number) => {
   if (eventId !== undefined) res.write(`id: ${eventId}\n`);
@@ -53,6 +63,9 @@ const configureSse = (res: Response) => {
 const waitForNextEvent = (ms: number) =>
   new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Agent 模式聊天的 SSE 事件推送循环：把某个 Agent Run 的执行过程实时或断线补发给前端。
+ */
 const streamAgentRunEvents = async (
   res: Response,
   runId: string,
@@ -98,6 +111,17 @@ const streamAgentRunEvents = async (
         type: "done",
         llmProvider: currentRun.llmProvider ?? "openai-agents",
         llmModel: currentRun.llmModel ?? undefined,
+        stats: {
+          durationMs: currentRun.durationMs ?? 0,
+          inputTokens: currentRun.inputTokens ?? 0,
+          outputTokens: currentRun.outputTokens ?? 0,
+          totalTokens: currentRun.totalTokens ?? 0,
+          llmRequestCount: currentRun.llmRequestCount ?? 0,
+          contextWindowTokens: currentRun.contextWindowTokens ?? 0,
+          traceId: currentRun.traceId,
+          spanId: currentRun.spanId,
+          usageState: currentRun.usageState,
+        },
       });
       return;
     }
@@ -135,18 +159,26 @@ export function registerChatStreamRoutes(app: Express) {
         }
       }
 
-      if (ENV.chatMode !== "agent") {
-        res.json({ mode: ENV.chatMode, runId: null });
-        return;
-      }
-
       const run = await enqueueAgentRun({
         userId: user.id,
+        userRole: user.role,
         ticketId,
         content,
       });
-      res.status(202).json({ mode: "agent", runId: run.id });
+      res.status(202).json({
+        mode: "agent",
+        runId: run.id,
+        quota: run.quota,
+      });
     } catch (error) {
+      if (error instanceof TokenQuotaExceededError) {
+        res.status(429).json({
+          error: error.message,
+          code: TOKEN_QUOTA_EXCEEDED_CODE,
+          quota: error.quota,
+        });
+        return;
+      }
       res.status(500).json({ error: getPublicAgentErrorMessage(error) });
     }
   });
@@ -175,115 +207,4 @@ export function registerChatStreamRoutes(app: Express) {
     }
   });
 
-  app.post("/api/chat/stream", async (req: Request, res: Response) => {
-    configureSse(res);
-
-    const abortController = new AbortController();
-    let clientClosed = false;
-    let timedOut = false;
-    const timeoutId = ENV.chatMode === "agent" ? undefined : setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-    }, LLM_TIMEOUT_MS);
-    res.on("close", () => {
-      if (!res.writableEnded && ENV.chatMode !== "agent") {
-        clientClosed = true;
-        abortController.abort();
-      }
-    });
-
-    try {
-      const user = await authenticateRequest(req);
-      const content = typeof req.body?.content === "string"
-        ? req.body.content.trim()
-        : "";
-      const ticketId = typeof req.body?.ticketId === "number"
-        ? req.body.ticketId
-        : undefined;
-
-      if (!content) {
-        res.statusCode = 400;
-        writeSse(res, { type: "error", message: "消息内容不能为空" });
-        return;
-      }
-
-      if (ticketId !== undefined) {
-        try {
-          await getTicketForUser(ticketId, user);
-        } catch {
-          res.statusCode = 403;
-          writeSse(res, { type: "error", message: "无权访问该工单" });
-          return;
-        }
-      }
-
-      if (ENV.chatMode === "agent") {
-        const run = await enqueueAgentRun({
-          userId: user.id,
-          ticketId,
-          content,
-        });
-        await streamAgentRunEvents(res, run.id, 0, user.id, user.role === "admin");
-        return;
-      }
-
-      const { messages, relatedKnowledge, relatedKnowledgeSnapshot, retrieval } =
-        await prepareChatResponse({
-          userId: user.id,
-          userRole: user.role,
-          ticketId,
-          content,
-        });
-
-      writeSse(res, {
-        type: "meta",
-        relatedKnowledge: relatedKnowledgeSnapshot,
-        retrieval,
-        llmProvider: ENV.llmProvider,
-      });
-
-      let assistantContent = "";
-      let llmModel: string | undefined;
-
-      for await (const chunk of streamLLM({ messages }, abortController.signal)) {
-        if (chunk.type === "content" && chunk.content) {
-          assistantContent += chunk.content;
-          if (chunk.model) llmModel = chunk.model;
-          writeSse(res, { type: "delta", content: chunk.content });
-        }
-      }
-
-      if (!assistantContent) {
-        assistantContent = "抱歉，我无法处理您的请求。";
-        writeSse(res, { type: "delta", content: assistantContent });
-      }
-
-      await db.saveChatMessage({
-        ticketId,
-        userId: user.id,
-        role: "assistant",
-        content: assistantContent,
-        relatedKnowledgeIds: relatedKnowledge.map(kb => kb.id),
-        relatedKnowledgeSnapshot,
-        llmProvider: ENV.llmProvider,
-        llmModel,
-      });
-
-      writeSse(res, {
-        type: "done",
-        llmProvider: ENV.llmProvider,
-        llmModel,
-      });
-    } catch (error) {
-      if (!clientClosed) {
-        sendSseError(
-          res,
-          timedOut ? new Error("LLM call timed out，请稍后重试") : error
-        );
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      res.end();
-    }
-  });
 }

@@ -1,10 +1,24 @@
 import type { AgentRun } from "../drizzle/schema";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { ENV } from "./_core/env";
-import { LLM_TIMEOUT_MS } from "./chatService";
+import {
+  createRemoteTraceContext,
+  getActiveTraceContext,
+  type TelemetryTraceContext,
+  withActiveSpan,
+} from "./_core/observability";
+import { LLM_TIMEOUT_MS, parseJsonValue } from "./agentUtils";
+import {
+  deriveAgentWriteAuthorization,
+  parseAgentWriteAuthorization,
+} from "./agentPolicy";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
 
+import { TokenQuotaExceededError } from "./tokenQuota";
+
 export const getPublicAgentErrorMessage = (error: unknown) => {
+  if (error instanceof TokenQuotaExceededError) return error.message;
   const message =
     error instanceof Error ? error.message : "发送消息失败，请稍后重试";
 
@@ -38,24 +52,32 @@ export const appendAgentStreamEvent = async (
 
 export async function enqueueAgentRun(input: {
   userId: number;
+  userRole?: "user" | "admin";
   ticketId?: number;
   content: string;
   retryOfRunId?: string;
 }) {
+  const telemetry = getActiveTraceContext();
+  const authorization = deriveAgentWriteAuthorization(input.content);
   const run = await db.createAgentRun({
     userId: input.userId,
+    userRole: input.userRole,
     ticketId: input.ticketId,
     input: input.content,
     status: "queued",
     llmProvider: "openai-agents",
     llmModel: ENV.openAiModel,
     retryOfRunId: input.retryOfRunId,
+    traceId: telemetry?.traceId,
     metadata: {
       mode: "stream",
       executionMode: ENV.agentExecutionMode,
+      telemetry,
+      authorization,
     },
   });
 
+  const quota = await db.getTokenQuota(input.userId, input.userRole);
   await appendAgentStreamEvent(run.id, "meta", {
     relatedKnowledge: [],
     retrieval: null,
@@ -67,10 +89,10 @@ export async function enqueueAgentRun(input: {
       console.error("[Agent] Inline execution failed", { runId: run.id, error });
     });
   }
-  return run;
+  return { ...run, quota };
 }
 
-export async function executeAgentRun(
+async function executeAgentRunInternal(
   run: AgentRun,
   worker?: { workerId: string; leaseMs: number }
 ) {
@@ -104,6 +126,10 @@ export async function executeAgentRun(
     : undefined;
 
   try {
+    const runMetadata = parseJsonValue<Record<string, unknown>>(run.metadata, {});
+    const authorization =
+      parseAgentWriteAuthorization(runMetadata.authorization) ??
+      deriveAgentWriteAuthorization(run.input);
     const result = await streamAgentChatResponse(
       {
         runId: run.id,
@@ -111,6 +137,7 @@ export async function executeAgentRun(
         userRole: user.role,
         ticketId: run.ticketId ?? undefined,
         content: run.input,
+        authorization,
         retryOfRunId: run.retryOfRunId ?? undefined,
         executionFence: worker ? {
           workerId: worker.workerId,
@@ -143,6 +170,7 @@ export async function executeAgentRun(
     await appendAgentStreamEvent(run.id, "done", {
       llmProvider: "openai-agents",
       llmModel: ENV.openAiModel,
+      stats: { ...result.runStats, usageState: "actual" },
       attemptCount: run.attemptCount,
     });
   } catch (error) {
@@ -151,18 +179,33 @@ export async function executeAgentRun(
         ? new Error("LLM call timed out，请稍后重试")
         : error
     );
-    await db.updateAgentRun(run.id, {
-      status: "failed",
+    await db.finalizeFailedAgentRun({
+      runId: run.id,
+      attemptNumber: run.attemptCount,
       error: message,
-      completedAt: new Date(),
-    }, worker ? {
-      workerId: worker.workerId,
-      attemptCount: run.attemptCount,
-    } : undefined).catch(updateError => {
+      executionFence: worker
+        ? { workerId: worker.workerId, attemptCount: run.attemptCount }
+        : undefined,
+    }).catch(updateError => {
       console.error("[Agent] Failed to mark run failed", updateError);
     });
     await appendAgentStreamEvent(run.id, "error", {
       message,
+      stats: await db.getAgentRunById(run.id).then(currentRun =>
+        currentRun
+          ? {
+              durationMs: currentRun.durationMs,
+              inputTokens: currentRun.inputTokens,
+              outputTokens: currentRun.outputTokens,
+              totalTokens: currentRun.totalTokens,
+              llmRequestCount: currentRun.llmRequestCount,
+              contextWindowTokens: currentRun.contextWindowTokens,
+              traceId: currentRun.traceId,
+              spanId: currentRun.spanId,
+              usageState: currentRun.usageState,
+            }
+          : undefined
+      ),
       attemptCount: run.attemptCount,
     });
   } finally {
@@ -177,4 +220,63 @@ export async function executeAgentRun(
       });
     }
   }
+}
+
+export async function executeAgentRun(
+  run: AgentRun,
+  worker?: { workerId: string; leaseMs: number }
+) {
+  const metadata = parseJsonValue<Record<string, unknown>>(run.metadata, {});
+  const parentTrace = parseJsonValue<TelemetryTraceContext | null>(
+    metadata.telemetry,
+    null
+  );
+  const parentContext = createRemoteTraceContext(parentTrace);
+
+  return withActiveSpan(
+    "agent.run",
+    {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.request.model": run.llmModel ?? ENV.openAiModel,
+      "agent.run.id": run.id,
+      "agent.run.attempt": run.attemptCount,
+      "agent.execution.mode": worker ? "worker" : "inline",
+      "agent.user.id": run.userId,
+      ...(run.ticketId ? { "agent.ticket.id": run.ticketId } : {}),
+    },
+    async span => {
+      const telemetry = getActiveTraceContext();
+      if (telemetry) {
+        await db.updateAgentRun(
+          run.id,
+          { traceId: telemetry.traceId, spanId: telemetry.spanId },
+          worker
+            ? {
+                workerId: worker.workerId,
+                attemptCount: run.attemptCount,
+              }
+            : undefined
+        );
+      }
+
+      await executeAgentRunInternal(run, worker);
+      const completedRun = await db.getAgentRunById(run.id);
+      if (completedRun) {
+        span.setAttributes({
+          "agent.run.status": completedRun.status,
+          "agent.run.duration_ms": completedRun.durationMs ?? 0,
+          "gen_ai.usage.input_tokens": completedRun.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": completedRun.outputTokens ?? 0,
+          "gen_ai.usage.total_tokens": completedRun.totalTokens ?? 0,
+        });
+        if (completedRun.status === "failed") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: completedRun.error ?? "Agent Run failed",
+          });
+        }
+      }
+    },
+    parentContext
+  );
 }

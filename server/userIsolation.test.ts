@@ -4,7 +4,9 @@ import type { TrpcContext } from "./_core/context";
 vi.mock("./db", () => ({
   addTicketNote: vi.fn(),
   getAgentRunById: vi.fn(),
+  getAgentRunSummaries: vi.fn(),
   getAgentRunWithSteps: vi.fn(),
+  getTokenQuota: vi.fn(),
   getChatHistory: vi.fn(),
   getKnowledgeByIds: vi.fn(),
   getRecentChatHistory: vi.fn(),
@@ -14,14 +16,6 @@ vi.mock("./db", () => ({
   listTickets: vi.fn(),
   updateTicket: vi.fn(),
 }));
-
-vi.mock("./chatService", async importOriginal => {
-  const actual = await importOriginal<typeof import("./chatService")>();
-  return {
-    ...actual,
-    createChatResponse: vi.fn(),
-  };
-});
 
 vi.mock("./agentService", () => ({
   createAgentChatResponse: vi.fn(),
@@ -90,9 +84,20 @@ describe("user resource isolation", () => {
       steps: [],
     });
     mockedDb.getAgentRunById.mockResolvedValue(runB);
+    mockedDb.getAgentRunSummaries.mockResolvedValue([]);
+    mockedDb.getTokenQuota.mockResolvedValue({
+      bucketDate: "2026-07-30",
+      resetAt: "2026-07-31T00:00:00.000Z",
+      quotaLimitTokens: 0,
+      reservedTokens: 0,
+      usedTokens: 0,
+      remainingTokens: null,
+      enforced: false,
+      adminExempt: false,
+    });
   });
 
-  it("rejects A from every ticket and chat endpoint for B's ticket", async () => {
+  it("rejects A from every ticket and chat history endpoint for B's ticket", async () => {
     const caller = appRouter.createCaller(createContext());
 
     await expect(caller.tickets.getById({ id: ticketB.id }))
@@ -109,11 +114,6 @@ describe("user resource isolation", () => {
     })).rejects.toThrow("Unauthorized");
     await expect(caller.chat.getHistory({ ticketId: ticketB.id }))
       .rejects.toThrow("Unauthorized");
-    await expect(caller.chat.sendMessage({
-      ticketId: ticketB.id,
-      content: "读取 B 的工单",
-    })).rejects.toThrow("Unauthorized");
-
     expect(mockedDb.getTicketNotes).not.toHaveBeenCalled();
     expect(mockedDb.getTicketChatHistory).not.toHaveBeenCalled();
     expect(mockedDb.getChatHistory).not.toHaveBeenCalled();
@@ -148,6 +148,17 @@ describe("user resource isolation", () => {
     await expect(caller.chat.getHistory({})).resolves.toEqual([]);
 
     expect(mockedDb.getChatHistory).toHaveBeenCalledWith(userA.id, undefined, 50);
+    expect(mockedDb.getAgentRunSummaries).toHaveBeenCalledWith([]);
+  });
+
+  it("returns the caller's current UTC token quota snapshot", async () => {
+    const caller = appRouter.createCaller(createContext());
+    await expect(caller.agentRuns.getTokenQuota()).resolves.toMatchObject({
+      bucketDate: "2026-07-30",
+      resetAt: "2026-07-31T00:00:00.000Z",
+      enforced: false,
+    });
+    expect(mockedDb.getTokenQuota).toHaveBeenCalledWith(userA.id, userA.role);
   });
 
   it("rejects A from B's Agent Run detail and retry endpoints", async () => {

@@ -7,6 +7,11 @@ import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import { ENV } from "./env";
+import {
+  cacheSession,
+  getCachedSession,
+  markSessionRevoked,
+} from "./sessionCache";
 
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_N = 16_384;
@@ -169,8 +174,18 @@ export async function authenticateRequest(req: Request) {
   const token = getSessionToken(req);
   if (!token) throw ForbiddenError("Invalid session");
 
-  const result = await db.getActiveSessionWithUser(hashSessionToken(token));
+  const tokenHash = hashSessionToken(token);
+  const cached = await getCachedSession(tokenHash);
+  if (cached.status === "revoked") throw ForbiddenError("Invalid session");
+
+  const result = cached.status === "hit"
+    ? cached.value
+    : await db.getActiveSessionWithUser(tokenHash);
   if (!result) throw ForbiddenError("Invalid session");
+
+  if (cached.status === "miss") {
+    void cacheSession(tokenHash, result);
+  }
 
   if (Date.now() - result.session.lastSeenAt.getTime() >= SESSION_TOUCH_INTERVAL_MS) {
     void db.touchSession(result.session.id).catch(() => undefined);
@@ -181,7 +196,11 @@ export async function authenticateRequest(req: Request) {
 
 export async function revokeRequestSession(req: Request) {
   const token = getSessionToken(req);
-  if (token) await db.revokeSession(hashSessionToken(token));
+  if (!token) return;
+
+  const tokenHash = hashSessionToken(token);
+  await db.revokeSession(tokenHash);
+  await markSessionRevoked(tokenHash);
 }
 
 export function clearSessionCookie(req: Request, res: Response) {

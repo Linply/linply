@@ -1,0 +1,22 @@
+import "dotenv/config";
+import { configureHostedAgentTracing } from "./_core/agentTracing";
+import { shutdownTelemetry, startTelemetry } from "./_core/telemetry";
+
+configureHostedAgentTracing();
+
+async function bootstrap() {
+  startTelemetry("agent-worker");
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      void shutdownTelemetry();
+    });
+  }
+
+  await import("./agentWorker");
+}
+
+void bootstrap().catch(error => {
+  console.error("[Agent Worker] Failed to start", error);
+  process.exitCode = 1;
+});

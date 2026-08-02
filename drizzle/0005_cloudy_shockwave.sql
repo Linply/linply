@@ -21,7 +21,7 @@ CREATE TABLE "sessions" (
 	CONSTRAINT "sessions_tokenHash_unique" UNIQUE("tokenHash")
 );
 --> statement-breakpoint
--- Legacy Manus identities are intentionally not migrated. The project owner
+-- Legacy external identities are intentionally not migrated. The project owner
 -- approved clearing historical business data before enforcing the new schema.
 TRUNCATE TABLE "agent_run_steps", "agent_runs", "chat_messages", "ticket_notes", "tickets", "knowledge_base", "knowledge_documents", "auth_accounts", "sessions", "users" RESTART IDENTITY CASCADE;--> statement-breakpoint
 ALTER TABLE "users" DROP CONSTRAINT "users_openId_unique";--> statement-breakpoint
