@@ -295,6 +295,42 @@ const shouldShowCreateTicket = (message: ChatMessage) => {
   );
 };
 
+const ACTIVE_RUN_STORAGE_KEY = "linply.activeAgentRun";
+
+type StoredActiveRun = { runId: string; input: string };
+
+const readStoredActiveRun = (): StoredActiveRun | null => {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_RUN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredActiveRun>;
+    if (typeof parsed?.runId === "string" && typeof parsed?.input === "string") {
+      return { runId: parsed.runId, input: parsed.input };
+    }
+  } catch {
+    // sessionStorage 不可用或数据损坏时走 listActive 慢路径。
+  }
+  return null;
+};
+
+const storeActiveRun = (run: StoredActiveRun) => {
+  try {
+    sessionStorage.setItem(ACTIVE_RUN_STORAGE_KEY, JSON.stringify(run));
+  } catch {
+    // 忽略写入失败，仅影响快速续接路径。
+  }
+};
+
+const clearStoredActiveRun = (runId: string) => {
+  try {
+    if (readStoredActiveRun()?.runId === runId) {
+      sessionStorage.removeItem(ACTIVE_RUN_STORAGE_KEY);
+    }
+  } catch {
+    // 忽略清理失败。
+  }
+};
+
 type ScrollFrameRef = { current: number | null };
 
 const cancelScheduledScroll = (frameRef: ScrollFrameRef) => {
@@ -390,8 +426,8 @@ export default function SmartChat() {
         : null,
     }));
 
-    setMessages(previousMessages =>
-      historyMessages.map(historyMessage => {
+    setMessages(previousMessages => {
+      const merged = historyMessages.map(historyMessage => {
         if (historyMessage.role !== "assistant" || !historyMessage.runId) {
           return historyMessage;
         }
@@ -414,8 +450,22 @@ export default function SmartChat() {
               isStreaming: false,
             }
           : historyMessage;
-      })
-    );
+      });
+
+      // 保留仍在续接中的本地消息（例如刷新后恢复的 run），避免被历史刷新冲掉。
+      const mergedRunKeys = new Set(
+        merged
+          .filter(message => message.runId)
+          .map(message => `${message.role}:${message.runId}`)
+      );
+      const liveTail = previousMessages.filter(
+        message =>
+          message.runId &&
+          !mergedRunKeys.has(`${message.role}:${message.runId}`) &&
+          (message.role === "user" || message.isStreaming)
+      );
+      return [...merged, ...liveTail];
+    });
   }, [chatHistory]);
 
   const handleMessagesScroll = () => {
@@ -505,6 +555,264 @@ export default function SmartChat() {
     }
   };
 
+  const streamAgentRun = async (runId: string, assistantId: string) => {
+    let lastEventId = 0;
+    let receivedContent = false;
+    let receivedDone = false;
+    let terminalError = false;
+    let currentAttempt = 0;
+
+    const handleEvent = (event: string) => {
+      const eventId = event
+        .split("\n")
+        .find(line => line.startsWith("id:"))
+        ?.slice(3)
+        .trim();
+      if (eventId && /^\d+$/.test(eventId)) lastEventId = Number(eventId);
+
+      const data = event
+        .split("\n")
+        .filter(line => line.startsWith("data:"))
+        .map(line => line.slice(5).trimStart())
+        .join("\n");
+
+      if (!data) return;
+      const payload = JSON.parse(data);
+
+      const eventAttempt =
+        typeof payload.attemptCount === "number"
+          ? payload.attemptCount
+          : currentAttempt;
+      if (eventAttempt < currentAttempt) return;
+      currentAttempt = Math.max(currentAttempt, eventAttempt);
+
+      if (payload.type === "reset") {
+        receivedContent = false;
+        receivedDone = false;
+        terminalError = false;
+        updateAssistant(assistantId, message => ({
+          ...message,
+          content: "",
+          relatedKnowledge: [],
+          retrieval: null,
+          agentEvents: [],
+          streamItems: [],
+          structuredOutput: undefined,
+          error: undefined,
+          isStreaming: true,
+        }));
+        return;
+      }
+
+      if (payload.type === "agent_event") {
+        updateAssistant(assistantId, message => ({
+          ...message,
+          runId: payload.event?.runId ?? message.runId,
+          agentEvents: [...(message.agentEvents ?? []), payload.event],
+          streamItems: appendAgentActivity(
+            message.streamItems ?? [],
+            payload.event
+          ),
+        }));
+        return;
+      }
+
+      if (payload.type === "meta") {
+        updateAssistant(assistantId, message => ({
+          ...message,
+          relatedKnowledge: payload.relatedKnowledge ?? [],
+          retrieval: payload.retrieval ?? message.retrieval,
+          runId: payload.runId ?? message.runId,
+          structuredOutput:
+            payload.structuredOutput ?? message.structuredOutput,
+        }));
+        return;
+      }
+
+      if (payload.type === "delta") {
+        receivedContent = true;
+        updateAssistant(assistantId, message => ({
+          ...message,
+          content: `${message.content}${payload.content ?? ""}`,
+          streamItems: appendStreamText(
+            message.streamItems ?? [],
+            payload.content ?? ""
+          ),
+          isStreaming: true,
+        }));
+        return;
+      }
+
+      if (payload.type === "done") {
+        receivedDone = true;
+        updateAssistant(assistantId, message => ({
+          ...message,
+          isStreaming: false,
+          runStats: payload.stats
+            ? {
+                ...payload.stats,
+                llmModel: payload.llmModel ?? message.runStats?.llmModel,
+              }
+            : message.runStats,
+        }));
+        return;
+      }
+
+      if (payload.type === "error") {
+        terminalError = true;
+        if (receivedContent) {
+          updateAssistant(assistantId, message => ({
+            ...message,
+            isStreaming: false,
+          }));
+          toast.error(payload.message || "回复已生成，但收尾状态同步失败");
+          return;
+        }
+        throw new Error(payload.message || "发送消息失败，请稍后重试");
+      }
+    };
+
+    const readStream = async (response: Response) => {
+      if (!response.ok || !response.body) {
+        throw new Error("发送消息失败，请稍后重试");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        events.forEach(handleEvent);
+      }
+      if (buffer.trim()) handleEvent(buffer);
+    };
+
+    const streamUrl = () =>
+      `/api/chat/stream/${encodeURIComponent(runId)}?afterSeq=${lastEventId}`;
+
+    let connectionError: unknown;
+    try {
+      await readStream(await fetch(streamUrl()));
+    } catch (error) {
+      connectionError = error;
+    }
+
+    for (
+      let attempt = 0;
+      !receivedDone && !terminalError && attempt < 5;
+      attempt++
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      try {
+        await readStream(await fetch(streamUrl()));
+      } catch (error) {
+        connectionError = error;
+      }
+    }
+
+    if (receivedDone || terminalError) clearStoredActiveRun(runId);
+
+    if (!receivedDone && !terminalError) {
+      throw connectionError instanceof Error
+        ? connectionError
+        : new Error("连接中断，暂时无法续接 Agent Run，请稍后重试");
+    }
+    if (terminalError && connectionError && !receivedContent)
+      throw connectionError;
+    if (!receivedContent) throw new Error("未收到 AI 回复，请稍后重试");
+  };
+
+  const resumeAgentRun = async (run: StoredActiveRun) => {
+    const assistantId = `resume-assistant-${run.runId}`;
+    setIsLoading(true);
+    shouldAutoScrollRef.current = true;
+    setMessages(prev => {
+      if (
+        prev.some(
+          message => message.role === "assistant" && message.runId === run.runId
+        )
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      if (
+        !prev.some(
+          message => message.role === "user" && message.runId === run.runId
+        )
+      ) {
+        next.push({
+          id: `resume-user-${run.runId}`,
+          role: "user",
+          content: run.input,
+          runId: run.runId,
+        });
+      }
+      next.push({
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        relatedKnowledge: [],
+        isStreaming: true,
+        runId: run.runId,
+        agentEvents: [],
+        streamItems: [],
+        sourcePrompt: run.input,
+      });
+      return next;
+    });
+
+    try {
+      await streamAgentRun(run.runId, assistantId);
+      updateAssistant(assistantId, message => ({
+        ...message,
+        isStreaming: false,
+      }));
+      await Promise.all([
+        utils.chat.getHistory.invalidate(),
+        utils.agentRuns.getTokenQuota.invalidate(),
+      ]);
+    } catch (error: any) {
+      updateAssistant(assistantId, message => ({
+        ...message,
+        isStreaming: false,
+        error: error?.message || "续接 Agent Run 失败，请稍后重试",
+      }));
+      toast.error(error?.message || "续接 Agent Run 失败，请稍后重试");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current) return;
+    resumeAttemptedRef.current = true;
+
+    void (async () => {
+      // 快速路径：本标签页发起的 run 记录在 sessionStorage，省一次网络往返。
+      const stored = readStoredActiveRun();
+      if (stored) {
+        await resumeAgentRun(stored);
+        return;
+      }
+      try {
+        const activeRuns = await utils.agentRuns.listActive.fetch();
+        const latest = activeRuns?.[0];
+        if (latest) {
+          await resumeAgentRun({ runId: latest.runId, input: latest.input });
+        }
+      } catch {
+        // 查询失败时保持静默，不影响正常聊天。
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const sendMessage = async (content: string) => {
     const userMessage = content.trim();
     if (!userMessage || isLoading || quotaBlocksSending) return;
@@ -565,180 +873,16 @@ export default function SmartChat() {
       setQuotaSnapshot(startPayload.quota);
       setQuotaError(null);
       void utils.agentRuns.getTokenQuota.setData(undefined, startPayload.quota);
-      let runId: string | undefined = startPayload.runId;
-      let lastEventId = 0;
-      let receivedContent = false;
-      let receivedDone = false;
-      let terminalError = false;
-      let currentAttempt = 0;
+      const runId = startPayload.runId;
+      storeActiveRun({ runId, input: userMessage });
+      updateAssistant(assistantId, message => ({ ...message, runId }));
+      setMessages(prev =>
+        prev.map(message =>
+          message.id === `${now}` ? { ...message, runId } : message
+        )
+      );
 
-      const handleEvent = (event: string) => {
-        const eventId = event
-          .split("\n")
-          .find(line => line.startsWith("id:"))
-          ?.slice(3)
-          .trim();
-        if (eventId && /^\d+$/.test(eventId)) lastEventId = Number(eventId);
-
-        const data = event
-          .split("\n")
-          .filter(line => line.startsWith("data:"))
-          .map(line => line.slice(5).trimStart())
-          .join("\n");
-
-        if (!data) return;
-        const payload = JSON.parse(data);
-
-        const eventAttempt =
-          typeof payload.attemptCount === "number"
-            ? payload.attemptCount
-            : currentAttempt;
-        if (eventAttempt < currentAttempt) return;
-        currentAttempt = Math.max(currentAttempt, eventAttempt);
-
-        if (payload.type === "reset") {
-          receivedContent = false;
-          receivedDone = false;
-          terminalError = false;
-          updateAssistant(assistantId, message => ({
-            ...message,
-            content: "",
-            relatedKnowledge: [],
-            retrieval: null,
-            agentEvents: [],
-            streamItems: [],
-            structuredOutput: undefined,
-            error: undefined,
-            isStreaming: true,
-          }));
-          return;
-        }
-
-        if (payload.type === "agent_event") {
-          updateAssistant(assistantId, message => ({
-            ...message,
-            runId: payload.event?.runId ?? message.runId,
-            agentEvents: [...(message.agentEvents ?? []), payload.event],
-            streamItems: appendAgentActivity(
-              message.streamItems ?? [],
-              payload.event
-            ),
-          }));
-          return;
-        }
-
-        if (payload.type === "meta") {
-          runId = payload.runId ?? runId;
-          updateAssistant(assistantId, message => ({
-            ...message,
-            relatedKnowledge: payload.relatedKnowledge ?? [],
-            retrieval: payload.retrieval ?? message.retrieval,
-            runId: payload.runId ?? message.runId,
-            structuredOutput:
-              payload.structuredOutput ?? message.structuredOutput,
-          }));
-          return;
-        }
-
-        if (payload.type === "delta") {
-          receivedContent = true;
-          updateAssistant(assistantId, message => ({
-            ...message,
-            content: `${message.content}${payload.content ?? ""}`,
-            streamItems: appendStreamText(
-              message.streamItems ?? [],
-              payload.content ?? ""
-            ),
-            isStreaming: true,
-          }));
-          return;
-        }
-
-        if (payload.type === "done") {
-          receivedDone = true;
-          updateAssistant(assistantId, message => ({
-            ...message,
-            isStreaming: false,
-            runStats: payload.stats
-              ? {
-                  ...payload.stats,
-                  llmModel: payload.llmModel ?? message.runStats?.llmModel,
-                }
-              : message.runStats,
-          }));
-          return;
-        }
-
-        if (payload.type === "error") {
-          terminalError = true;
-          if (receivedContent) {
-            updateAssistant(assistantId, message => ({
-              ...message,
-              isStreaming: false,
-            }));
-            toast.error(payload.message || "回复已生成，但收尾状态同步失败");
-            return;
-          }
-          throw new Error(payload.message || "发送消息失败，请稍后重试");
-        }
-      };
-
-      const readStream = async (response: Response) => {
-        if (!response.ok || !response.body) {
-          throw new Error("发送消息失败，请稍后重试");
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split("\n\n");
-          buffer = events.pop() ?? "";
-          events.forEach(handleEvent);
-        }
-        if (buffer.trim()) handleEvent(buffer);
-      };
-
-      if (!runId) {
-        throw new Error("未创建 Agent Run，请稍后重试");
-      }
-      const streamRunId = runId;
-      const streamUrl = () =>
-        `/api/chat/stream/${encodeURIComponent(streamRunId)}?afterSeq=${lastEventId}`;
-      const initialResponse = await fetch(streamUrl());
-
-      let connectionError: unknown;
-      try {
-        await readStream(initialResponse);
-      } catch (error) {
-        connectionError = error;
-      }
-
-      for (
-        let attempt = 0;
-        runId && !receivedDone && !terminalError && attempt < 5;
-        attempt++
-      ) {
-        await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
-        try {
-          await readStream(await fetch(streamUrl()));
-        } catch (error) {
-          connectionError = error;
-        }
-      }
-
-      if (runId && !receivedDone && !terminalError) {
-        throw connectionError instanceof Error
-          ? connectionError
-          : new Error("连接中断，暂时无法续接 Agent Run，请稍后重试");
-      }
-      if (terminalError && connectionError && !receivedContent)
-        throw connectionError;
-      if (!receivedContent) throw new Error("未收到 AI 回复，请稍后重试");
+      await streamAgentRun(runId, assistantId);
 
       updateAssistant(assistantId, message => ({
         ...message,
