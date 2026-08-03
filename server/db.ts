@@ -1821,6 +1821,33 @@ export async function getAgentRunById(id: string) {
   return result.length > 0 ? result[0] : null;
 }
 
+export async function listActiveAgentRunsForUser(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select({
+      id: agentRuns.id,
+      status: agentRuns.status,
+      input: agentRuns.input,
+      ticketId: agentRuns.ticketId,
+      createdAt: agentRuns.createdAt,
+    })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.userId, userId),
+        inArray(agentRuns.status, [
+          "queued",
+          "planning",
+          "running",
+          "waiting_approval",
+        ])
+      )
+    )
+    .orderBy(desc(agentRuns.createdAt));
+}
+
 export async function getAgentRunSteps(runId: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");

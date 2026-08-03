@@ -1043,6 +1043,17 @@ export const appRouter = router({
         return getAgentRunForUser(input.id, ctx.user);
       }),
 
+    listActive: protectedProcedure.query(async ({ ctx }) => {
+      const runs = await db.listActiveAgentRunsForUser(ctx.user.id);
+      return runs.map((run) => ({
+        runId: run.id,
+        status: run.status,
+        input: run.input,
+        ticketId: run.ticketId,
+        createdAt: run.createdAt,
+      }));
+    }),
+
     summarizeRecentTickets: protectedProcedure
       .input(
         z
