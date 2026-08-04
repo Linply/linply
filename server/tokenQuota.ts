@@ -18,7 +18,7 @@ export class TokenQuotaExceededError extends Error {
   readonly quota: TokenQuotaSnapshot;
 
   constructor(quota: TokenQuotaSnapshot) {
-    super("今日 Token 额度不足，请在 UTC 自然日重置后重试");
+    super("今日 Credit 余额不足，请在额度重置后重试");
     this.name = "TokenQuotaExceededError";
     this.quota = quota;
   }
