@@ -5,6 +5,7 @@ import InlineAgentActivity, {
   AgentWorkingStatus,
   type InlineAgentActivityItem,
 } from "@/components/InlineAgentActivity";
+import CreditQuotaIndicator from "@/components/CreditQuotaIndicator";
 import PageNav from "@/components/PageNav";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,17 +27,12 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { mergeChatHistory } from "@/lib/chatMessageMerge";
 import { trpc } from "@/lib/trpc";
 import type { TokenQuotaSnapshot, TokenUsageState } from "@shared/types";
 import {
   AlertCircle,
   Bot,
-  ChevronDown,
   Clock3,
   ClipboardList,
   Copy,
@@ -360,8 +356,6 @@ export default function SmartChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [quotaSnapshot, setQuotaSnapshot] = useState<TokenQuotaSnapshot | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
-  const [quotaDetailsOpen, setQuotaDetailsOpen] = useState(false);
-  const quotaDetailsRef = useRef<HTMLDivElement>(null);
   const [ticketDraft, setTicketDraft] = useState<{
     sourceMessageId: string;
     title: string;
@@ -381,27 +375,6 @@ export default function SmartChat() {
   useEffect(() => {
     if (tokenQuota) setQuotaSnapshot(tokenQuota);
   }, [tokenQuota]);
-
-  useEffect(() => {
-    if (!quotaDetailsOpen) return;
-
-    const closeOnOutsideInteraction = (event: PointerEvent | FocusEvent) => {
-      const target = event.target;
-      if (
-        target instanceof Node &&
-        !quotaDetailsRef.current?.contains(target)
-      ) {
-        setQuotaDetailsOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", closeOnOutsideInteraction);
-    document.addEventListener("focusin", closeOnOutsideInteraction);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideInteraction);
-      document.removeEventListener("focusin", closeOnOutsideInteraction);
-    };
-  }, [quotaDetailsOpen]);
 
   useEffect(() => {
     if (!chatHistory) return;
@@ -426,46 +399,9 @@ export default function SmartChat() {
         : null,
     }));
 
-    setMessages(previousMessages => {
-      const merged = historyMessages.map(historyMessage => {
-        if (historyMessage.role !== "assistant" || !historyMessage.runId) {
-          return historyMessage;
-        }
-
-        const liveMessage = previousMessages.find(
-          message =>
-            message.role === "assistant" &&
-            message.runId === historyMessage.runId &&
-            message.streamItems?.length
-        );
-        return liveMessage
-          ? {
-              ...historyMessage,
-              id: liveMessage.id,
-              streamItems: liveMessage.streamItems,
-              structuredOutput: liveMessage.structuredOutput,
-              retrieval: liveMessage.retrieval,
-              sourcePrompt: liveMessage.sourcePrompt,
-              runStats: historyMessage.runStats ?? liveMessage.runStats,
-              isStreaming: false,
-            }
-          : historyMessage;
-      });
-
-      // 保留仍在续接中的本地消息（例如刷新后恢复的 run），避免被历史刷新冲掉。
-      const mergedRunKeys = new Set(
-        merged
-          .filter(message => message.runId)
-          .map(message => `${message.role}:${message.runId}`)
-      );
-      const liveTail = previousMessages.filter(
-        message =>
-          message.runId &&
-          !mergedRunKeys.has(`${message.role}:${message.runId}`) &&
-          (message.role === "user" || message.isStreaming)
-      );
-      return [...merged, ...liveTail];
-    });
+    setMessages(previousMessages =>
+      mergeChatHistory(historyMessages, previousMessages)
+    );
   }, [chatHistory]);
 
   const handleMessagesScroll = () => {
@@ -1307,7 +1243,7 @@ export default function SmartChat() {
           <Textarea
             rows={1}
             disabled={isLoading || quotaBlocksSending}
-            placeholder={quotaBlocksSending ? "今日 Token 额度已用尽" : "输入消息"}
+            placeholder={quotaBlocksSending ? "今日 Credit 已用尽" : "输入消息"}
             value={inputValue}
             onChange={event => setInputValue(event.target.value)}
             className="max-h-48 min-h-12 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
@@ -1319,69 +1255,7 @@ export default function SmartChat() {
             }}
           />
           {quotaSnapshot ? (
-            <Collapsible
-              ref={quotaDetailsRef}
-              open={quotaDetailsOpen}
-              onOpenChange={setQuotaDetailsOpen}
-              className="absolute bottom-3 left-3 max-w-[calc(100%-5.5rem)]"
-            >
-              <CollapsibleTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className={
-                    quotaError
-                      ? "h-10 gap-1.5 px-2 text-red-700 hover:bg-red-50 hover:text-red-800"
-                      : "h-10 gap-1.5 px-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-                  }
-                  aria-label={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
-                  title={quotaDetailsOpen ? "收起 Token 额度详情" : "展开 Token 额度详情"}
-                >
-                  {quotaError ? <AlertCircle className="h-4 w-4" /> : null}
-                  <span className="truncate text-xs sm:text-sm">
-                    Token {quotaSnapshot.remainingTokens == null
-                      ? `已用 ${formatTokens(quotaSnapshot.usedTokens)}`
-                      : `剩余 ${formatTokens(quotaSnapshot.remainingTokens)}`}
-                  </span>
-                  <ChevronDown
-                    className={`h-4 w-4 shrink-0 transition-transform ${
-                      quotaDetailsOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="absolute bottom-12 left-0 z-20 w-[min(22rem,calc(100vw-3rem))] rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600 shadow-lg">
-                <div className="flex flex-wrap items-center gap-2 font-medium text-gray-900">
-                  今日 Token 额度（UTC）
-                  {!quotaSnapshot.enforced || quotaSnapshot.quotaLimitTokens === 0 ? (
-                    <Badge variant="outline">观测模式</Badge>
-                  ) : null}
-                  {quotaSnapshot.adminExempt ? (
-                    <Badge variant="outline">管理员豁免</Badge>
-                  ) : null}
-                </div>
-                <div className="mt-2 space-y-1">
-                  <p>
-                    已消耗 {formatTokens(quotaSnapshot.usedTokens)} · 已预留{" "}
-                    {formatTokens(quotaSnapshot.reservedTokens)}
-                  </p>
-                  <p>
-                    剩余 {quotaSnapshot.remainingTokens == null
-                      ? "不限额"
-                      : formatTokens(quotaSnapshot.remainingTokens)}
-                    {quotaSnapshot.quotaLimitTokens > 0
-                      ? ` / ${formatTokens(quotaSnapshot.quotaLimitTokens)}`
-                      : ""}
-                  </p>
-                  <p>
-                    UTC 日期 {quotaSnapshot.bucketDate}，重置时间{" "}
-                    {new Date(quotaSnapshot.resetAt).toLocaleString()}。
-                  </p>
-                  {quotaError ? <p className="text-red-700">{quotaError}</p> : null}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
+            <CreditQuotaIndicator quota={quotaSnapshot} error={quotaError} />
           ) : null}
           <Button
             type="submit"
