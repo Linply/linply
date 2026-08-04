@@ -151,17 +151,17 @@ export default function CreditQuotaIndicator({
 
         <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 tabular-nums">
           <dt>今日额度</dt>
-          <dd className="font-medium text-gray-900">
+          <dd className="text-right font-medium text-gray-900">
             {isUnlimited
               ? "不限额"
               : `${formatCredits(quota.quotaLimitTokens)} Credit`}
           </dd>
           <dt>已消耗</dt>
-          <dd className="font-medium text-gray-900">
+          <dd className="text-right font-medium text-gray-900">
             {formatCredits(quota.usedTokens)} Credit
           </dd>
           <dt>处理中预留</dt>
-          <dd className="font-medium text-gray-900">
+          <dd className="text-right font-medium text-gray-900">
             {formatCredits(quota.reservedTokens)} Credit
           </dd>
           <dt>重置时间</dt>
@@ -174,10 +174,6 @@ export default function CreditQuotaIndicator({
             })}
           </dd>
         </dl>
-
-        <p className="mt-3 border-t border-gray-100 pt-3 text-[11px] text-gray-500">
-          换算比例：1 Credit = 1,000 Token
-        </p>
         {error ? <p className="mt-2 text-red-700">{error}</p> : null}
       </CollapsibleContent>
     </Collapsible>
