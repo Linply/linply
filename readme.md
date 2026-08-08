@@ -1,192 +1,173 @@
-# 客服工单 Agent 系统
+# Linply
 
-AI 驱动的客服工单系统，覆盖工单全生命周期管理、基于 RAG/Agent 的智能客服、知识库维护、Agent Run 可观测排查与 demo 上线。
+**English** · [简体中文](./readme.zh-CN.md)
 
-## 技术栈
+Multi-tenant, self-serve AI customer support: **every account owns one workspace** —
+its own knowledge base, its own customer conversations, its own channel connections.
+There is no cross-workspace administrator; every row is isolated by `workspaceId`.
 
-- 前端：React 19、Tailwind CSS 4、shadcn/ui、wouter
-- 数据与接口：tRPC 11、React Query
-- 后端：Express 4、OpenAI Agents SDK
-- 数据库、队列与存储：PostgreSQL 16 + pgvector、Drizzle ORM；Redis Session 缓存 + BullMQ；S3 兼容对象存储
-- 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
-- LLM：OpenAI Agents SDK
-- 认证：邮箱密码 + Google OAuth、数据库 Session、用户与管理员权限隔离
+## Stack
 
-## 核心能力
+- Frontend: React 19, Tailwind CSS 4, shadcn/ui, wouter
+- Data & API: tRPC 11, React Query
+- Backend: Express 4, OpenAI Agents SDK
+- Storage: PostgreSQL 16 + pgvector, Drizzle ORM; Redis session cache + BullMQ; S3-compatible object storage
+- Embeddings: local `BAAI/bge-small-zh-v1.5` (512-dim) / OpenAI / Voyage
+- Auth: email + password, Google OAuth, database sessions, workspace-scoped
+- Channels: Telegram bot (webhook / polling), sign-in-free share link
+- i18n: English (default) and Simplified Chinese
 
-- 工单管理：创建、筛选、搜索、详情、状态流转、备注、统计。
-- 智能客服：通过 OpenAI Agents SDK 调用知识库和工单工具，支持 SSE 流式事件与断线恢复。
-- 知识库管理：手动维护、Markdown/CSV multipart 分片直传、BullMQ 异步流式解析、embedding 回填、冲突检测。
-- Agent Run 排查：使用 UUID 标识运行，保存步骤、最终回答、错误和结构化结果，支持从管理员聊天回复直接查看与重试。
-- 观测与安全：记录 LLM/embedding 耗时和 token/维度元信息，日志脱敏敏感凭据。
+## Plans
 
-## 本地启动
+| | Free | Pro $5/mo | Business $20/mo | Self-hosted |
+|---|---|---|---|---|
+| Knowledge entries | 100 | 2,000 | 20,000 | Unlimited |
+| Daily credits | 100 | 1,000 | 5,000 | Unlimited |
+| Connected channels | 1 | 3 | 10 | Unlimited |
+| Customers / 30 days | 100 | 2,000 | 20,000 | Unlimited |
+| Remove Linply branding | — | ✅ | ✅ | ✅ |
+| Customer cards | — | — | ✅ | ✅ |
+
+The catalog lives in `shared/plans.ts`. The server enforces limits from it and the
+`/plans` page renders from it, so advertised and enforced limits cannot drift.
+
+**Payment is not wired up yet.** Choosing a plan writes a pending row to
+`plan_requests`; nothing is charged and the workspace stays on its current plan.
+
+## What it does
+
+- **Workspace** — provisioned on sign-up. Holds the agent persona (name / tone /
+  business context / fallback script), the share-link public key, and onboarding progress.
+- **Onboarding** — `/onboarding`, four steps: describe your business → import knowledge →
+  try it once → plug it in. New accounts land here before the workspace.
+- **Knowledge** — paste Q&A, upload Markdown/CSV (multipart direct upload + BullMQ
+  streaming parse), embedding backfill, conflict detection, prompt-injection scanning.
+- **Agent** — OpenAI Agents SDK with knowledge and ticket tools. The system prompt is
+  generated per workspace from its persona. SSE streaming with reconnect/replay.
+- **Channels** — Telegram connects by pasting a bot token (webhook when a public HTTPS
+  origin exists, otherwise automatic `getUpdates` polling). Sign-in-free share link at
+  `/a/:publicKey`. Slack and Feishu are listed as planned.
+- **Conversations** — external visitors are `channel_contacts`; they never register.
+  The owner reads the full thread under Conversations.
+- **Tickets** — what the agent produces when it hands off to a human, workspace-scoped too.
+- **Agent Run inspection** — UUID-identified runs with steps, final output, errors,
+  structured results, and retry.
+
+### Isolation model
+
+Authorization has two rules and no roles:
+
+1. A row is reachable only from the workspace it belongs to.
+2. Inside a workspace, the owner (console scope) sees everything; an external
+   contact only ever sees rows attributed to that same contact.
+
+`workspaceProcedure` injects `ctx.workspace` and `ctx.scope`; `server/accessControl.ts`
+is the single decision point.
+
+## Local setup
 
 ```bash
 pnpm install
 docker compose up -d postgres redis embeddings minio minio-init
 pnpm db:migrate
-ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='replace-me' pnpm auth:create-admin
-pnpm db:seed
-pnpm kb:embed
 pnpm dev
 ```
 
-默认访问地址：
+Default addresses:
 
-- 应用：http://localhost:3000
-- PostgreSQL：localhost:5432
-- Redis：localhost:6379（可选；未配置时认证直接查询 PostgreSQL）
-- 本地 embedding 服务：http://localhost:8080
-- MinIO S3 API：http://localhost:9000；管理界面：http://localhost:9001
+- App: http://localhost:3000
+- PostgreSQL: localhost:5432
+- Redis: localhost:6379 (optional; without it auth reads PostgreSQL directly)
+- Local embedding service: http://localhost:8080
+- MinIO S3 API: http://localhost:9000, console: http://localhost:9001
 
-账号入口：
+Accounts:
 
-- 登录：http://localhost:3000/login
-- 注册：http://localhost:3000/register
+- Sign up: http://localhost:3000/register — provisions a workspace and opens `/onboarding`
+- Sign in: http://localhost:3000/login
 
-普通账号通过注册页创建；管理员账号使用 `pnpm auth:create-admin` 初始化或提升已有账号。
+Every account is the same kind. `pnpm db:seed` loads a sample workspace with knowledge
+and tickets; `pnpm auth:create-user` provisions one from the CLI (useful for a demo login).
 
-## 环境变量
-
-复制 `.env.example` 并按环境配置：
+## Environment
 
 ```bash
 cp .env.example .env
 ```
 
-关键配置：
+Key settings:
 
-- `DATABASE_URL`：PostgreSQL 连接串。
-- `REDIS_URL`：可选的登录 Session 缓存连接串；缺失或 Redis 故障时自动回退 PostgreSQL。
-- `QUEUE_REDIS_URL`：BullMQ 连接串；初期可与 `REDIS_URL` 相同，生产高负载时建议独立 Redis。
-- `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_S3_BUCKET_NAME`：知识库原始文件对象存储。未配置时仅保留旧的 50 MB 本地兼容上传路径。
-- `KNOWLEDGE_UPLOAD_PART_SIZE_MB=16`：浏览器 multipart 分片基准大小；超大文件会自动增大分片以满足 S3 最多 10,000 片的约束。
-- `SESSION_CACHE_TTL_MS=60000`：认证用户与权限快照的短 TTL，上限 5 分钟，不改变数据库中的 30 天绝对 Session 到期时间。角色降权或禁用用户时应同时撤销其 Session，而不是依赖 TTL 自然过期。
-- `ADMIN_EMAIL` / `ADMIN_PASSWORD`：仅在运行管理员初始化命令时使用。
-- `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD`：可选，仅用于登录页的管理员演示入口；账号必须已通过 `pnpm auth:create-admin` 初始化并具有管理员角色。
-- `APP_BASE_URL`：应用公网 origin，用于生成 OAuth callback。
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证；缺失时入口自动隐藏。
-- `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`：OpenAI 兼容模型配置。
-- `EMBEDDING_PROVIDER=local|openai|voyage`：embedding provider。
-- `LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5`：本地 embedding 对外模型名，向量维度为 512。
-- `LOCAL_EMBEDDING_RUNTIME_MODEL=Xenova/bge-small-zh-v1.5`：app 内置 Transformers.js endpoint 的运行模型。
-- `LOCAL_EMBEDDING_API_KEY`：可选；设置后 `/v1/embeddings` 需要 Bearer token。
-- `RAG_EMBEDDINGS_ENABLED=true|false`：关闭后使用关键词检索兜底。
-- `AGENT_TRACING_ENABLED=false`：开启 OpenAI Agents tracing 时仍不包含敏感原始数据。
-- `OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=...`：通过 OTLP/HTTP 导出 Web、Worker、Agent 工具和模型 HTTP 链路；Web 与 Worker 应使用同一 Collector。
-- `OPENAI_CONTEXT_WINDOW_TOKENS=272000`：仅用于聊天和 Run 详情中的 Token 窗口占比参考。
-- `AGENT_EXECUTION_MODE=inline|worker`：本地默认 `inline`；Railway Web 服务使用 `worker`，只负责创建 queued Run。
-- `AGENT_WORKER_POLL_MS` / `AGENT_WORKER_LEASE_MS` / `AGENT_WORKER_MAX_ATTEMPTS`：独立 worker 的轮询、租约和最大尝试次数。
+- `DATABASE_URL` — PostgreSQL connection string.
+- `APP_BASE_URL` — public origin. Used for the OAuth callback and the share link, and it
+  decides whether Telegram registers a webhook: only a public HTTPS origin does, otherwise
+  channels fall back to `getUpdates` polling.
+- `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` — OpenAI-compatible model config.
+  **Without a key the agent cannot answer.**
+- `AGENT_DAILY_TOKEN_QUOTA` — optional hard ceiling on top of the plan allowance. `0` means
+  the plan alone decides.
+- `EMBEDDING_PROVIDER=local|openai|voyage`, `RAG_EMBEDDINGS_ENABLED` — retrieval config;
+  disabling embeddings falls back to keyword search.
+- `DEMO_ACCOUNT_EMAIL` / `DEMO_ACCOUNT_PASSWORD` — optional one-click demo entry on the
+  sign-in page. An ordinary account with no special rights; it must already exist.
+- `REDIS_URL`, `QUEUE_REDIS_URL`, `AWS_*` — session cache, BullMQ, knowledge file storage.
 
-完整说明见 `.env.example` 和 [上线准备说明](references/deployment-readiness.md)。
+See `.env.example` for the full list.
 
-## 常用命令
+## Commands
 
 ```bash
-pnpm dev            # 开发服务
-pnpm check          # TypeScript 类型检查
-pnpm test           # 运行 Vitest 测试
-pnpm build          # 生产构建
-pnpm start          # 启动生产构建
-pnpm worker         # 启动生产 Agent worker
-pnpm worker:dev     # 本地开发 Agent worker
-pnpm knowledge:worker     # 启动生产知识库 Worker
-pnpm knowledge:worker:dev # 本地开发知识库 Worker
-pnpm db:generate    # 根据 schema 生成迁移
-pnpm db:migrate     # 应用迁移
-pnpm db:seed        # 初始化示例数据
-pnpm auth:create-admin # 创建或提升管理员账号
-pnpm kb:embed       # 回填知识库 embedding
-pnpm kb:embed:check # 检查 embedding 服务连通性
-pnpm kb:storage:cors # 为 APP_BASE_URL 配置 Bucket 浏览器直传 CORS
+pnpm dev              # dev server
+pnpm check            # TypeScript
+pnpm test             # Vitest
+pnpm build            # production build
+pnpm start            # run the production build
+pnpm worker           # agent worker
+pnpm knowledge:worker # knowledge worker
+pnpm db:generate      # generate a migration from the schema
+pnpm db:migrate       # apply migrations
+pnpm db:seed          # sample workspace
+pnpm auth:create-user # create an account and provision its workspace
+pnpm kb:embed         # backfill knowledge embeddings
 ```
 
-## 项目结构
+## Layout
 
 ```text
-client/          前端页面、组件、hooks、tRPC 客户端
-server/          后端路由、聊天、Agent、数据库访问、知识库导入
-drizzle/         数据库 schema 与迁移文件
-scripts/         seed、embedding 回填和诊断脚本
-references/      阶段说明和部署准备文档
-test-data/       知识库导入测试数据
+client/          pages, components, hooks, tRPC client
+client/src/i18n/ en/zh dictionaries; `zh` is typed against `en`, so a missing key fails the build
+server/          routers, chat streaming, agent, DB access, knowledge import
+server/channels/ channel adapters: Telegram, inbound pipeline, webhook routes, share link
+server/workspace.ts  workspace provisioning and scope definitions
+shared/plans.ts  plan catalog shared by enforcement and pricing UI
+drizzle/         schema and migrations
 ```
 
-## 测试覆盖
-
-当前测试覆盖：
-
-- OpenAI provider Responses API mock 与错误脱敏
-- embedding 请求、解析、cosine similarity
-- RAG 关键词召回质量
-- Agent tool 入参校验、结果摘要、结构化输出兜底
-- Agent Run 状态与步骤类型
-- 密码哈希、Google OAuth PKCE/state、数据库 Session 与认证登出
-- 用户工单/聊天隔离、知识库解析、基础工单 smoke flow
-
-运行：
+## Tests
 
 ```bash
 pnpm check
 pnpm test
 ```
 
-## Railway Demo 部署
+Covered: workspace isolation (cross-workspace reads and writes rejected, list queries
+forced to carry `workspaceId`, workspace provisioned on first access), OpenAI provider
+mock and error redaction, embeddings, keyword RAG recall, agent tool validation and
+structured output, agent run states, password hashing, Google OAuth PKCE/state,
+database sessions, knowledge parsing, ticket smoke flow.
 
-当前 demo 已部署在 Railway：
+## Deploying
 
-- 应用：[https://app-production-35d3.up.railway.app](https://app-production-35d3.up.railway.app)
-- 登录：`/login`；注册：`/register`
-- 数据库：Railway Postgres + pgvector
-- Embedding：app 内置 `/v1/embeddings`，运行 `Xenova/bge-small-zh-v1.5`，返回 512 维向量
+1. Set production environment variables — `DATABASE_URL`, `APP_BASE_URL`, model and
+   embedding config.
+2. Run `pnpm db:migrate`.
+3. Optionally run `pnpm auth:create-user` and set `DEMO_ACCOUNT_*` for the demo entry.
+4. Run `pnpm kb:embed` to backfill vectors; switching embedding models resets old vectors.
+5. Point the Google OAuth callback at `${APP_BASE_URL}/api/auth/oauth/google/callback`.
+6. Create an `agent-worker` service and set `AGENT_EXECUTION_MODE=worker` on the web service.
+7. Create object storage and a `knowledge-worker` service, then run `pnpm kb:storage:cors` once.
+8. Start with `NODE_ENV=production pnpm start` and verify: email sign-in, Google sign-in,
+   **cross-workspace isolation**, multipart upload, knowledge parsing, agent run lease
+   recovery, and the Telegram webhook at `${APP_BASE_URL}/api/channels/telegram/:secret`.
 
-Railway app 关键变量：
-
-```bash
-APP_BASE_URL=https://app-production-35d3.up.railway.app
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-EMBEDDING_PROVIDER=local
-LOCAL_EMBEDDING_BASE_URL=http://127.0.0.1:8080
-LOCAL_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
-LOCAL_EMBEDDING_RUNTIME_MODEL=Xenova/bge-small-zh-v1.5
-LOCAL_EMBEDDING_PATH=/v1/embeddings
-RAG_EMBEDDINGS_ENABLED=true
-RAILPACK_NODE_VERSION=20
-TRANSFORMERS_CACHE=/tmp/transformers-cache
-AGENT_EXECUTION_MODE=worker
-```
-
-Agent 模式使用独立 Railway Service：
-
-```text
-Service: agent-worker
-Shared config: /railway.json
-Start command: pnpm railway:start（按 RAILWAY_SERVICE_NAME 选择 Web 或 worker）
-DATABASE_URL: ${{Postgres.DATABASE_URL}}
-REDIS_URL: ${{Redis.REDIS_URL}}
-LOCAL_EMBEDDING_BASE_URL: ${{app.APP_BASE_URL}}
-```
-
-worker 还需与 app 使用相同的 `OPENAI_*` 和必要的 tracing 配置。它通过 PostgreSQL 租约领取 queued Run；Web 服务只负责入队和 SSE 事件订阅。Redis 只用于 Web 登录认证缓存，因此 `REDIS_URL` 仅需配置在 app Web 服务，Worker 不需要。Railway 的 `app.PORT` 不是可跨服务引用的配置变量，因此 worker 的 embedding 地址使用 app 的 HTTPS 地址，并继续携带 `LOCAL_EMBEDDING_API_KEY`。仓库也保留了 `/railway.worker.json`，可在 Dashboard 单独绑定时使用。
-worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，但不配置公网域名。
-
-大文件知识库导入还需要 Railway Bucket 和独立 `knowledge-worker` Service。Web 与 Knowledge Worker 都配置 Bucket 的 `AWS_*` 变量和 `QUEUE_REDIS_URL=${{Redis.REDIS_URL}}`，Worker 启动命令为 `pnpm knowledge:worker`。浏览器直传前，在 Web Service 的生产变量环境中运行一次 `pnpm kb:storage:cors`，将 Bucket CORS 限制到 `APP_BASE_URL`。
-
-`LOCAL_EMBEDDING_API_KEY` 在 Railway 中已设置为服务内 token。公网直接访问 `/v1/embeddings` 会返回 `401`，后端自调用会带 Bearer token。
-
-旧的独立 `embeddings` Railway 服务已不再作为主路径使用；demo 主链路依赖 app 内置 embedding endpoint。
-
-## 部署要点
-
-1. 设置生产环境变量，尤其是 `DATABASE_URL`、`APP_BASE_URL`、LLM 和 embedding 配置。
-2. 执行 `pnpm db:migrate`。
-3. 使用 `ADMIN_EMAIL`、`ADMIN_PASSWORD` 运行一次 `pnpm auth:create-admin`。
-4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
-5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-6. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
-7. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
-8. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查邮箱登录、Google 登录、用户隔离、分片上传、知识库解析和 Agent Run 租约恢复。
-
-更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。
+Chinese documentation, including Railway deployment notes, is in
+[readme.zh-CN.md](./readme.zh-CN.md).

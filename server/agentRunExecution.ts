@@ -14,6 +14,7 @@ import {
 } from "./agentPolicy";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
+import type { ConversationScope } from "./workspace";
 
 import { TokenQuotaExceededError } from "./tokenQuota";
 
@@ -51,8 +52,7 @@ export const appendAgentStreamEvent = async (
 };
 
 export async function enqueueAgentRun(input: {
-  userId: number;
-  userRole?: "user" | "admin";
+  scope: ConversationScope;
   ticketId?: number;
   content: string;
   retryOfRunId?: string;
@@ -60,8 +60,10 @@ export async function enqueueAgentRun(input: {
   const telemetry = getActiveTraceContext();
   const authorization = deriveAgentWriteAuthorization(input.content);
   const run = await db.createAgentRun({
-    userId: input.userId,
-    userRole: input.userRole,
+    workspaceId: input.scope.workspaceId,
+    userId: input.scope.ownerUserId,
+    contactId: input.scope.contactId,
+    channelId: input.scope.channelId,
     ticketId: input.ticketId,
     input: input.content,
     status: "queued",
@@ -77,7 +79,7 @@ export async function enqueueAgentRun(input: {
     },
   });
 
-  const quota = await db.getTokenQuota(input.userId, input.userRole);
+  const quota = await db.getTokenQuota(input.scope.ownerUserId);
   await appendAgentStreamEvent(run.id, "meta", {
     relatedKnowledge: [],
     retrieval: null,
@@ -96,8 +98,12 @@ async function executeAgentRunInternal(
   run: AgentRun,
   worker?: { workerId: string; leaseMs: number }
 ) {
-  const user = await db.getUserById(run.userId);
-  if (!user) throw new Error("Agent Run user not found");
+  const scope: ConversationScope = {
+    workspaceId: run.workspaceId,
+    ownerUserId: run.userId,
+    contactId: run.contactId,
+    channelId: run.channelId,
+  };
 
   if (run.attemptCount > 1) {
     await appendAgentStreamEvent(run.id, "reset", {
@@ -133,8 +139,7 @@ async function executeAgentRunInternal(
     const result = await streamAgentChatResponse(
       {
         runId: run.id,
-        userId: run.userId,
-        userRole: user.role,
+        scope,
         ticketId: run.ticketId ?? undefined,
         content: run.input,
         authorization,
@@ -241,7 +246,7 @@ export async function executeAgentRun(
       "agent.run.id": run.id,
       "agent.run.attempt": run.attemptCount,
       "agent.execution.mode": worker ? "worker" : "inline",
-      "agent.user.id": run.userId,
+      "agent.workspace.id": run.workspaceId,
       ...(run.ticketId ? { "agent.ticket.id": run.ticketId } : {}),
     },
     async span => {

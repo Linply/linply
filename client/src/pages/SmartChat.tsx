@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useWorkspace } from "@/hooks/useWorkspace";
+import { useT } from "@/i18n";
 import type { AgentEvent } from "@/components/agentTimeline";
 import InlineAgentActivity, {
   AgentWorkingStatus,
   type InlineAgentActivityItem,
 } from "@/components/InlineAgentActivity";
 import CreditQuotaIndicator from "@/components/CreditQuotaIndicator";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -348,7 +349,16 @@ const scheduleScrollToBottom = (
 };
 
 export default function SmartChat() {
-  const { user } = useAuth({ redirectOnUnauthenticated: true });
+  const { workspace } = useWorkspace();
+  const t = useT();
+  /** Shown on the empty conversation so the first question is one click away. */
+  const starterPrompts = [
+    t.chat.starter1,
+    t.chat.starter2,
+    t.chat.starter3,
+    t.chat.starter4,
+  ];
+  const agentName = workspace?.agentName ?? "Agent";
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -461,12 +471,26 @@ export default function SmartChat() {
     };
   }, []);
 
-  const quotaBlocksSending = Boolean(
+  const quotaEnforced = Boolean(
     quotaSnapshot?.enforced &&
       !quotaSnapshot.adminExempt &&
-      quotaSnapshot.quotaLimitTokens > 0 &&
-      quotaSnapshot.remainingTokens === 0
+      quotaSnapshot.quotaLimitTokens > 0
   );
+  const quotaBlocksSending =
+    quotaEnforced && quotaSnapshot?.remainingTokens === 0;
+  /**
+   * The shell header always shows the balance; the composer only speaks up once
+   * the balance is close enough to actually interrupt the next send.
+   */
+  const quotaWarning = quotaBlocksSending
+    ? t.chat.quotaExhausted
+    : quotaEnforced &&
+        (quotaSnapshot?.remainingTokens ?? 0) <
+          (quotaSnapshot?.quotaLimitTokens ?? 0) * 0.15
+      ? t.chat.quotaLow(
+          Math.round((quotaSnapshot?.remainingTokens ?? 0) / 1000)
+        )
+      : null;
   const assistantIsStreaming = messages.some(
     message => message.role === "assistant" && message.isStreaming
   );
@@ -912,31 +936,43 @@ export default function SmartChat() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-background pt-[5.75rem]">
-      <PageNav />
-      <div className="mx-auto flex h-[calc(100vh-5.75rem)] max-w-5xl flex-col px-3 sm:px-6">
-        <div className="flex h-[4.75rem] shrink-0 items-center justify-between border-b border-gray-200">
-          <div>
-            <h1 className="text-base font-semibold text-gray-950">智能客服</h1>
-            <p className="mt-0.5 text-xs text-gray-500">知识库与工单 Agent</p>
-          </div>
-        </div>
+    <AppShell
+      title={t.chat.title}
+      description={t.chat.subtitle}
+      maxWidth="full"
+      fullBleed
+    >
+      <div className="flex h-[calc(100vh-3.5rem)] flex-col">
 
         <div
           ref={messagesViewportRef}
           onScroll={handleMessagesScroll}
-          className="min-h-0 flex-1 space-y-6 overflow-y-auto px-1 py-6 sm:px-4"
+          className="min-h-0 flex-1 overflow-y-auto"
           style={{ overflowAnchor: "none" }}
         >
+          <div className="mx-auto w-full max-w-3xl space-y-7 px-4 py-8 sm:px-6">
           {messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-center">
-              <div>
-                <span className="mx-auto mb-3 flex size-10 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600">
-                  <Bot className="size-5" />
-                </span>
-                <p className="text-sm font-medium text-gray-700">
-                  开始一段新对话
-                </p>
+            <div className="flex min-h-[55vh] flex-col items-center justify-center text-center">
+              <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                <Bot className="size-6" />
+              </span>
+              <h2 className="mt-4 text-lg font-semibold text-foreground">
+                {t.chat.emptyTitle}
+              </h2>
+              <p className="mt-1.5 max-w-sm text-sm leading-6 text-muted-foreground">
+                {t.chat.emptySubtitle}
+              </p>
+              <div className="mt-6 flex flex-wrap justify-center gap-2">
+                {starterPrompts.map(prompt => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => setInputValue(prompt)}
+                    className="rounded-full border border-border bg-card px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-input hover:text-foreground"
+                  >
+                    {prompt}
+                  </button>
+                ))}
               </div>
             </div>
           ) : (
@@ -950,20 +986,25 @@ export default function SmartChat() {
               return (
                 <div
                   key={message.id}
-                  className={`flex gap-3 text-sm leading-6 ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                  className={`flex gap-3 text-sm leading-7 ${message.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   {message.role === "assistant" ? (
-                    <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-gray-950 text-white">
+                    <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                       <Bot className="size-3.5" />
                     </span>
                   ) : null}
                   <div
-                    className={`min-w-0 max-w-[calc(100%_-_2.5rem)] sm:max-w-[42rem] ${
+                    className={`min-w-0 ${
                       message.role === "user"
-                        ? "rounded-lg bg-gray-200 px-4 py-2.5 text-gray-900 sm:max-w-xl"
-                        : "w-full py-1 text-gray-900"
+                        ? "max-w-[85%] rounded-2xl rounded-br-md bg-primary-soft px-4 py-2.5 text-primary-soft-foreground sm:max-w-xl"
+                        : "w-full max-w-[calc(100%_-_2.5rem)] text-foreground"
                     }`}
                   >
+                    {message.role === "assistant" ? (
+                      <p className="mb-1 text-xs font-medium text-muted-foreground">
+                        {agentName}
+                      </p>
+                    ) : null}
                     {message.role === "assistant" && hasStreamItems ? (
                       <div>
                         {streamGroups.map(group =>
@@ -1013,7 +1054,7 @@ export default function SmartChat() {
                             type="button"
                             variant="outline"
                             size="sm"
-                            className="mt-3 border-red-200 bg-white text-red-700 hover:bg-red-50"
+                            className="mt-3 border-red-200 bg-card text-red-700 hover:bg-red-50"
                             onClick={() => handleRetry(message)}
                             disabled={isLoading}
                           >
@@ -1032,49 +1073,34 @@ export default function SmartChat() {
 
                     {message.relatedKnowledge &&
                     message.relatedKnowledge.length > 0 ? (
-                      <div className="mt-4 border-t border-gray-200 pt-3 text-xs">
-                        <p className="mb-2 font-semibold text-gray-700">
-                          参考知识库
+                      <div className="mt-4 border-t border-border pt-3">
+                        <p className="mb-2 text-xs text-muted-foreground">
+                          {t.chat.citations(message.relatedKnowledge.length)}
                         </p>
-                        <div className="space-y-2">
-                          {message.relatedKnowledge.map(kb =>
-                            user?.role === "admin" ? (
-                              <button
-                                key={`${message.id}-${kb.id}`}
-                                type="button"
-                                onClick={() =>
-                                  setLocation(`/admin/knowledge?entry=${kb.id}`)
-                                }
-                                className="group flex w-full items-start justify-between gap-3 rounded-sm py-1 text-left text-gray-600 transition-colors hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
-                              >
-                                <span className="min-w-0">
-                                  <span className="block text-[11px] text-gray-400">
-                                    {kb.category}
-                                  </span>
-                                  <span className="block truncate">
-                                    {kb.title}
-                                  </span>
-                                </span>
-                                <ExternalLink className="mt-1 size-3 shrink-0 text-gray-300 group-hover:text-gray-500" />
-                              </button>
-                            ) : (
-                              <div
-                                key={`${message.id}-${kb.id}`}
-                                className="py-1"
-                              >
-                                <p className="text-[11px] text-gray-400">
-                                  {kb.category}
-                                </p>
-                                <p className="text-gray-600">{kb.title}</p>
-                              </div>
-                            )
-                          )}
+                        <div className="flex flex-wrap gap-1.5">
+                          {message.relatedKnowledge.map(kb => (
+                            <button
+                              key={`${message.id}-${kb.id}`}
+                              type="button"
+                              onClick={() =>
+                                setLocation(`/knowledge?entry=${kb.id}`)
+                              }
+                              title={`${kb.category} · ${kb.title}`}
+                              className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-input hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <span className="truncate">{kb.title}</span>
+                              <span className="shrink-0 text-[0.6875rem] text-muted-foreground/70">
+                                {kb.category}
+                              </span>
+                              <ExternalLink className="size-3 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-muted-foreground" />
+                            </button>
+                          ))}
                         </div>
                       </div>
                     ) : null}
 
                     {message.role === "assistant" && message.runId ? (
-                      <div className="mt-4 flex h-9 items-center justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
+                      <div className="mt-4 flex h-9 items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1.5 tabular-nums">
                           <Clock3 className="size-4" />
                           {message.isStreaming
@@ -1087,7 +1113,7 @@ export default function SmartChat() {
                               type="button"
                               aria-label="查看运行统计"
                               title="查看运行统计"
-                              className="flex size-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               <MoreHorizontal className="size-4" />
                             </button>
@@ -1099,64 +1125,64 @@ export default function SmartChat() {
                           >
                             <div className="space-y-3 px-4 py-4 text-sm">
                               <div className="flex items-start justify-between gap-4">
-                                <span className="text-gray-500">模型</span>
-                                <span className="min-w-0 break-all text-right font-mono text-xs font-medium text-gray-900">
+                                <span className="text-muted-foreground">模型</span>
+                                <span className="min-w-0 break-all text-right font-mono text-xs font-medium text-foreground">
                                   {message.runStats?.llmModel ?? "未记录"}
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-4">
-                                <span className="text-gray-500">模型请求</span>
-                                <span className="font-medium tabular-nums text-gray-900">
+                                <span className="text-muted-foreground">模型请求</span>
+                                <span className="font-medium tabular-nums text-foreground">
                                   {message.runStats?.llmRequestCount ?? 0} 次
                                 </span>
                               </div>
                               {message.runStats?.usageState ? (
                                 <div className="flex items-center justify-between gap-4">
-                                  <span className="text-gray-500">用量状态</span>
+                                  <span className="text-muted-foreground">用量状态</span>
                                   <Badge
                                     variant="outline"
                                     className={
                                       message.runStats.usageState === "unknown"
                                         ? "border-amber-200 bg-amber-50 text-amber-700"
-                                        : "bg-gray-50 text-gray-700"
+                                        : "bg-muted/60 text-muted-foreground"
                                     }
                                   >
                                     {USAGE_STATE_LABELS[message.runStats.usageState]}
                                   </Badge>
                                 </div>
                               ) : null}
-                              <div className="grid grid-cols-3 gap-3 border-y border-gray-100 py-3 text-center">
+                              <div className="grid grid-cols-3 gap-3 border-y border-border py-3 text-center">
                                 <div>
-                                  <p className="text-[11px] text-gray-400">输入</p>
-                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                  <p className="text-[11px] text-muted-foreground">输入</p>
+                                  <p className="mt-1 font-medium tabular-nums text-foreground">
                                     {formatTokens(message.runStats?.inputTokens)}
                                   </p>
                                 </div>
                                 <div>
-                                  <p className="text-[11px] text-gray-400">输出</p>
-                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                  <p className="text-[11px] text-muted-foreground">输出</p>
+                                  <p className="mt-1 font-medium tabular-nums text-foreground">
                                     {formatTokens(message.runStats?.outputTokens)}
                                   </p>
                                 </div>
                                 <div>
-                                  <p className="text-[11px] text-gray-400">总计</p>
-                                  <p className="mt-1 font-medium tabular-nums text-gray-900">
+                                  <p className="text-[11px] text-muted-foreground">总计</p>
+                                  <p className="mt-1 font-medium tabular-nums text-foreground">
                                     {formatTokens(message.runStats?.totalTokens)}
                                   </p>
                                 </div>
                               </div>
                               <div>
                                 <div className="flex items-center justify-between gap-4">
-                                  <span className="text-gray-500">用量 / 上下文窗口</span>
-                                  <span className="font-medium tabular-nums text-gray-900">
+                                  <span className="text-muted-foreground">用量 / 上下文窗口</span>
+                                  <span className="font-medium tabular-nums text-foreground">
                                     {getContextUsagePercent(message.runStats).toFixed(1)}%{` `}
-                                    <span className="font-normal text-gray-400">
+                                    <span className="font-normal text-muted-foreground">
                                       ({formatTokens(message.runStats?.totalTokens)} /{` `}
                                       {formatTokens(message.runStats?.contextWindowTokens)})
                                     </span>
                                   </span>
                                 </div>
-                                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-gray-100">
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-muted">
                                   <div
                                     className="h-full bg-emerald-500"
                                     style={{
@@ -1194,7 +1220,7 @@ export default function SmartChat() {
                     message.content &&
                     (getReferencedTicketId(message) ||
                       shouldShowCreateTicket(message)) ? (
-                      <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-200 pt-3">
+                      <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
                         {getReferencedTicketId(message) ? (
                           <Button
                             type="button"
@@ -1232,21 +1258,27 @@ export default function SmartChat() {
               {assistantIsStreaming ? <AgentWorkingStatus visible /> : null}
             </div>
           ) : null}
+          </div>
         </div>
 
-        <div className="shrink-0 py-2">
+        <div className="shrink-0 border-t border-border bg-background/80 backdrop-blur">
+          <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3 sm:px-6">
           <form
             ref={composerRef}
             onSubmit={handleSendMessage}
-            className="relative mb-3 flex min-h-[6.5rem] shrink-0 flex-col rounded-lg border border-gray-300 bg-white p-3 pb-14 focus-within:border-gray-500 focus-within:ring-2 focus-within:ring-gray-200"
+            className="relative flex min-h-[4.75rem] shrink-0 flex-col rounded-2xl border border-input bg-card p-3 pb-11 shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md"
           >
           <Textarea
             rows={1}
             disabled={isLoading || quotaBlocksSending}
-            placeholder={quotaBlocksSending ? "今日 Credit 已用尽" : "输入消息"}
+            placeholder={
+              quotaBlocksSending
+                ? t.chat.quotaExhaustedPlaceholder
+                : t.chat.inputPlaceholder
+            }
             value={inputValue}
             onChange={event => setInputValue(event.target.value)}
-            className="max-h-48 min-h-12 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
+            className="max-h-48 min-h-9 w-full resize-none border-0 bg-transparent px-1 py-1 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm"
             onKeyDown={event => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -1254,16 +1286,18 @@ export default function SmartChat() {
               }
             }}
           />
-          {quotaSnapshot ? (
-            <CreditQuotaIndicator quota={quotaSnapshot} error={quotaError} />
+          {quotaWarning ? (
+            <p className="absolute bottom-3.5 left-4 text-xs text-warning">
+              {quotaWarning}
+            </p>
           ) : null}
           <Button
             type="submit"
-            size="icon-lg"
+            size="icon"
             disabled={isLoading || quotaBlocksSending || !inputValue.trim()}
-            className="absolute bottom-3 right-3"
-            aria-label="发送消息"
-            title="发送消息"
+            className="absolute bottom-2.5 right-3 rounded-full"
+            aria-label={t.chat.send}
+            title={t.chat.send}
           >
             {isLoading ? (
               <Spinner className="h-4 w-4" />
@@ -1272,6 +1306,10 @@ export default function SmartChat() {
             )}
           </Button>
           </form>
+          <p className="mt-2 text-center text-[0.6875rem] text-muted-foreground">
+            {t.chat.composerHint}
+          </p>
+          </div>
         </div>
       </div>
 
@@ -1289,7 +1327,7 @@ export default function SmartChat() {
           {ticketDraft ? (
             <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
+                <label className="mb-2 block text-sm font-medium text-muted-foreground">
                   工单标题
                 </label>
                 <Input
@@ -1303,7 +1341,7 @@ export default function SmartChat() {
                 />
               </div>
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
+                <label className="mb-2 block text-sm font-medium text-muted-foreground">
                   工单描述
                 </label>
                 <Textarea
@@ -1337,6 +1375,6 @@ export default function SmartChat() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AppShell>
   );
 }

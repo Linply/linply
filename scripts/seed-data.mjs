@@ -52,6 +52,31 @@ async function seedData() {
       RETURNING id
     `;
     const seedUserId = seedUser.id;
+
+    // Every account owns exactly one workspace; seeded data hangs off it.
+    const [seedWorkspace] = await sql`
+      INSERT INTO workspaces ("ownerUserId", name, "publicKey", "agentName", "businessContext", "onboardingStep", "onboardingCompletedAt")
+      VALUES (
+        ${seedUserId},
+        ${"示例用户 的客服"},
+        ${randomBytes(12).toString("hex")},
+        ${"小满助手"},
+        ${"示例电商店铺，销售数码配件，客户最常问物流、退货和保修。"},
+        ${"done"},
+        now()
+      )
+      ON CONFLICT ("ownerUserId") DO UPDATE SET
+        "agentName" = EXCLUDED."agentName",
+        "updatedAt" = now()
+      RETURNING id
+    `;
+    const seedWorkspaceId = seedWorkspace.id;
+    await sql`
+      INSERT INTO workspace_channels ("workspaceId", provider, status, "displayName", "webhookSecret")
+      VALUES (${seedWorkspaceId}, ${"web"}, ${"connected"}, ${"分享链接"}, ${randomBytes(16).toString("hex")})
+      ON CONFLICT ("workspaceId", provider) DO NOTHING
+    `;
+    console.log(`已准备示例工作区，ID: ${seedWorkspaceId}`);
     await sql`
       INSERT INTO auth_accounts ("userId", provider, "providerAccountId", "passwordHash")
       VALUES (${ seedUserId }, ${ "password" }, ${ seedEmail }, ${ passwordHash })
@@ -118,16 +143,28 @@ async function seedData() {
     ];
 
     for (const kb of knowledgeData) {
-      await sql`
-        INSERT INTO knowledge_base (title, content, category, keywords)
-        VALUES (${kb.title}, ${kb.content}, ${kb.category}, ${kb.keywords})
-        ON CONFLICT (title) DO UPDATE SET
-          content = EXCLUDED.content,
-          category = EXCLUDED.category,
-          keywords = EXCLUDED.keywords,
-          embedding = NULL,
-          "updatedAt" = now()
+      const [existingEntry] = await sql`
+        SELECT id FROM knowledge_base
+        WHERE "workspaceId" = ${seedWorkspaceId} AND title = ${kb.title}
+        LIMIT 1
       `;
+      if (existingEntry) {
+        await sql`
+          UPDATE knowledge_base SET
+            content = ${kb.content},
+            category = ${kb.category},
+            keywords = ${kb.keywords},
+            embedding = NULL,
+            "embeddingStatus" = 'pending',
+            "updatedAt" = now()
+          WHERE id = ${existingEntry.id}
+        `;
+      } else {
+        await sql`
+          INSERT INTO knowledge_base ("workspaceId", title, content, category, keywords)
+          VALUES (${seedWorkspaceId}, ${kb.title}, ${kb.content}, ${kb.category}, ${kb.keywords})
+        `;
+      }
     }
     console.log(`已准备 ${knowledgeData.length} 条知识库数据`);
 
@@ -170,13 +207,13 @@ async function seedData() {
     ];
 
     const [{ count: existingTicketCount }] = await sql`
-      SELECT COUNT(*)::int AS count FROM tickets WHERE "userId" = ${seedUserId}
+      SELECT COUNT(*)::int AS count FROM tickets WHERE "workspaceId" = ${seedWorkspaceId}
     `;
     if (existingTicketCount === 0) {
       for (const ticket of ticketData) {
         await sql`
-          INSERT INTO tickets ("userId", title, description, status, priority)
-          VALUES (${ticket.userId}, ${ticket.title}, ${ticket.description}, ${ticket.status}, ${ticket.priority})
+          INSERT INTO tickets ("workspaceId", "userId", title, description, status, priority)
+          VALUES (${seedWorkspaceId}, ${ticket.userId}, ${ticket.title}, ${ticket.description}, ${ticket.status}, ${ticket.priority})
         `;
       }
       console.log(`已插入 ${ticketData.length} 条工单数据`);

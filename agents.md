@@ -1,6 +1,7 @@
-# 客服工单 Agent 系统文档
+# Linply 系统文档
 
-AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 的智能客服 + 可维护的知识库 + Agent Run 可观测排查。
+多租户自助智能客服：**每个注册用户拥有一个只属于自己的工作区**，自己导入知识、自己调教客服、自己接出渠道。
+系统中不存在跨工作区的管理员角色，所有业务数据按 `workspaceId` 隔离。
 
 ## 目录
 
@@ -8,21 +9,29 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 2. [核心模块](#核心模块)
 3. [智能客服 Agent](#智能客服-agent)
 4. [知识库管理](#知识库管理)
-5. [用户使用手册](#用户使用手册)
-6. [开发者指南](#开发者指南)
-7. [部署与运维](#部署与运维)
-8. [附录](#附录)
+5. [渠道接入](#渠道接入)
+6. [新用户引导](#新用户引导)
+7. [用户使用手册](#用户使用手册)
+8. [开发者指南](#开发者指南)
+9. [部署与运维](#部署与运维)
+10. [附录](#附录)
 
 ---
 
 ## 系统架构
 
 ```
-前端 (React 19 + Tailwind + shadcn/ui)
-   │  tRPC（端到端类型安全）+ SSE 流式聊天
-后端 (Express + tRPC + OpenAI Agents SDK)
-   │
-   ├── PostgreSQL + pgvector   数据 & 向量存储
+外部客户                          工作区所有者
+  │ Telegram / 分享链接              │ 浏览器
+  ▼                                  ▼
+渠道适配层 server/channels/     前端 (React 19 + Tailwind + shadcn/ui)
+  │  入站管线：识别 contact          │  tRPC + SSE 流式聊天
+  └──────────────┬──────────────────┘
+                 ▼
+      后端 (Express + tRPC + OpenAI Agents SDK)
+      每个请求携带 ConversationScope
+                 │
+   ├── PostgreSQL + pgvector   数据 & 向量存储（全部按 workspaceId 过滤）
    ├── Embedding 服务          本地 bge-small-zh-v1.5 / OpenAI / Voyage
    ├── Agent Worker            queued Run 的独立执行进程
    └── LLM API                 OpenAI 兼容
@@ -31,7 +40,10 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 - **前端**：页面分为首页、工单管理、智能客服、知识库、RAG 调试、Agent Run 详情、管理仪表盘；路由用 wouter，数据用 tRPC + React Query。
 - **后端**：tRPC 路由按域划分（`tickets` / `knowledge` / `chat` / `agentRuns` / `auth`），数据库访问集中在 `server/db.ts`。
 - **Agent 执行**：Web 进程负责创建 queued Run 和订阅 SSE；`AGENT_EXECUTION_MODE=inline` 时由应用进程执行，设为 `worker` 时由独立 Worker 通过 PostgreSQL 租约领取并执行。
-- **认证**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL；普通用户与管理员实行接口级权限隔离。
+- **认证与隔离**：邮箱密码与 Google OAuth 登录，随机 Session Token 的哈希保存在 PostgreSQL。
+  登录后由 `workspaceProcedure` 解析（必要时懒创建）调用者的工作区，并注入 `ctx.workspace` 与 `ctx.scope`。
+- **渠道**：`server/channels/` 提供适配层。Telegram 已完整实现（webhook + 本地轮询回落）；
+  每个工作区自带一条 `web` 渠道，对应免登录分享链接 `/a/:publicKey`。
 
 ---
 
@@ -39,6 +51,9 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 | 模块 | 职责 |
 | --- | --- |
+| 工作区 | 注册即开通，保存客服人设（名称/语气/业务背景/兜底话术）、分享链接 publicKey 和引导进度 |
+| 渠道接入 | Telegram Bot 接入与收发、免登录分享链接、外部访客识别与会话归集 |
+| 新用户引导 | `/onboarding` 四步向导：介绍业务 → 导入知识 → 试聊一次 → 接出去 |
 | 工单管理 | 创建、筛选/搜索、详情、状态与优先级流转、备注、统计 |
 | 知识库 | 知识条目的存储、检索、文档批量导入、冲突检测、增删 |
 | 智能客服 Agent | RAG 检索 + LLM/Agent 生成回答，展示执行过程，保存对话并标注引用来源 |
@@ -47,22 +62,44 @@ AI 驱动的客服工单系统：工单全生命周期管理 + 基于 RAG/Agent 
 
 ### 数据模型（概览）
 
-- **users**：用户资料与角色（user / admin）。
+- **workspaces**：工作区，`ownerUserId` 唯一。保存 `agentName` / `agentTone` / `greeting` / `fallbackReply` /
+  `businessContext`（这些直接进入系统提示词）、`publicKey`（分享链接）和 `onboardingStep`。
+- **workspace_channels**：渠道连接，`(workspaceId, provider)` 唯一。`credentials` 存 bot token，
+  **绝不可返回给客户端**（统一走 `toChannelDto` 剥离）；`webhookSecret` 同时用于 URL 路径与 Telegram `secret_token`。
+- **channel_contacts**：外部访客，不注册不登录，靠 `(channelId, externalId)` 识别。
+- **users**：登录账号资料。`role` 字段仍在表中，但**不再参与任何鉴权判断**。
 - **auth_accounts**：登录凭证账号，支持 password 与 google provider。
 - **sessions**：可撤销登录会话，只保存 Session Token 哈希、有效期和设备摘要。
 - **oauth_states**：一次性 OAuth state 与 PKCE verifier，回调消费后立即删除。
-- **tickets**：工单，含状态（pending / in_progress / resolved / closed）与优先级（low / medium / high / urgent）。
+- **tickets**：工单，含 `workspaceId`、可选 `contactId` / `channelId`、状态（pending / in_progress / resolved / closed）与优先级。
 - **ticket_notes**：工单备注与状态变更记录。
-- **knowledge_base**：知识条目，含向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记（`conflictWith` / `conflictScore`）。
+- **knowledge_base**：知识条目，含 `workspaceId`、向量 `embedding`、来源文档 `documentId`、嵌入状态、冲突标记。
+  检索先按 `workspaceId` 收敛再做精确余弦排序——全局 HNSW 索引在带 workspace 过滤时会丢召回，因此已移除。
 - **knowledge_documents**：上传文档，记录对象存储 key、multipart 会话、文件/分片大小、解析状态与索引进度。
-- **chat_messages**：对话记录，保存引用的知识库条目快照。
-- **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
+- **chat_messages**：对话记录，含 `workspaceId` 与可选 `contactId` / `channelId`。
+  `contactId` 为空表示所有者在控制台的试聊线程，非空表示某个外部访客的线程，两者永不混合。
+- **agent_runs**：Agent 单次运行记录，以 UUID 作为 Run ID，含 `workspaceId` / `contactId` / `channelId`，
+  保存输入、状态、最终回答、错误、模型、重试来源和 metadata。
 - **agent_run_steps**：Agent 运行步骤，记录 `thinking` / `tool_call` / `tool_result` / `final` / `error`。
 - **agent_run_events**：持久化 SSE 事件及递增事件 ID，用于客户端断线后的 Partial Replay。
 - **agent_tool_invocations**：记录工具调用状态、参数摘要、重试次数和可复用结果。
 - **agent_tool_effects**：记录跨重试链的幂等副作用结果，当前用于避免重复创建工单或备注。
 
 表结构以 `drizzle/schema.ts` 为准；变更通过 `pnpm db:generate` + `pnpm db:migrate` 管理。
+
+### 授权模型
+
+没有角色，只有两条规则：
+
+1. 一行数据只能从它所属的 workspace 访问。
+2. workspace 内部，所有者（console scope，`contactId == null`）看全部；
+   外部访客（contact scope）只看归属自己的行。
+
+实现位置：
+
+- `server/workspace.ts`：`requireWorkspaceForUser` 懒开通工作区；`ConversationScope` 定义「谁在问」。
+- `server/_core/trpc.ts`：`workspaceProcedure` 是业务数据的默认 procedure，注入 `ctx.workspace` 与 `ctx.scope`。
+- `server/accessControl.ts`：唯一的判定入口，所有 `*ForScope` 函数都在这里。
 
 ---
 
@@ -93,8 +130,8 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 
 - Agent Run 状态：`queued` / `planning` / `running` / `waiting_approval` / `failed` / `completed`。
 - Agent Step 类型：`thinking` / `tool_call` / `tool_result` / `final` / `error`。
-- `/runs/:runId` 为 Agent Run 详情页，管理员可从聊天回复底部复制 Run UUID 或直接跳转，也可从首页「Agent Run 排查」输入 UUID。
-- 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；普通用户只能查看自己的 Run，管理员可查看全部。
+- `/runs/:runId` 为 Agent Run 详情页，可从聊天回复底部复制 Run UUID 或直接跳转。
+- 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；只能查看本工作区的 Run。
 - `AGENT_TRACING_ENABLED=true` 时启用 OpenAI Agents tracing；trace 不包含敏感原始数据。
 
 **断线恢复与重试**
@@ -121,7 +158,7 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 
 ## 知识库管理
 
-支持单条手动维护，也支持文档批量导入（管理员，路径 `/admin/knowledge`）。
+路径 `/knowledge`，支持单条手动维护与文档批量导入。知识只属于当前工作区，检索时永远带 `workspaceId` 过滤。
 
 **文档导入**
 
@@ -132,7 +169,7 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 **冲突检测**
 
 - 每条新条目嵌入后，与已有条目比对：向量余弦相似度 ≥ 0.88，或归一化标题相同，即标记为「可能冲突」。
-- 冲突条目在列表中**置顶**并显示相似度及最相似条目，由管理员人工取舍。
+- 冲突检测只在同一工作区内比较；冲突条目在列表中**置顶**并显示相似度及最相似条目，由工作区所有者人工取舍。
 
 **增删**
 
@@ -142,21 +179,75 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 
 **RAG 调试**
 
-- 管理员可访问 `/admin/rag-debug`，输入问题查看召回条目、分类和分数。
+- 访问 `/rag-debug`，输入问题查看召回条目、分类和分数（仅限本工作区的知识）。
 - 用于检查知识库命中质量、关键词兜底效果和 embedding 服务状态。
+
+---
+
+## 渠道接入
+
+`server/channels/` 是把工作区的客服接出去的适配层。所有渠道的入站消息都汇聚到同一条管线
+`handleInboundChannelMessage`：识别/新建 `channel_contact` → 构造 contact scope 的 `ConversationScope`
+→ 调用 `createAgentChatResponse` → 通过适配器回信。
+
+### 为什么先做 Telegram
+
+接入成本是唯一的选择依据：
+
+| 渠道 | 接入成本 | 状态 |
+| --- | --- | --- |
+| 分享链接（web） | 0，工作区创建时自动开通 | ✅ |
+| Telegram | 只需一个 Bot Token，无 OAuth、无应用审核 | ✅ |
+| Slack | 需创建 Slack App + OAuth 安装流程 | 规划中 |
+| 飞书 | 需在开放平台创建企业自建应用 + 事件订阅校验 | 规划中 |
+
+### Telegram
+
+- **接入**：用户在 @BotFather 拿到 Token 粘贴进来 → `getMe` 校验 → 存入 `workspace_channels.credentials`。
+- **收信**：优先注册 webhook 到 `${APP_BASE_URL}/api/channels/telegram/:secret`，
+  并带上 `secret_token`；请求必须同时匹配路径与 `X-Telegram-Bot-Api-Secret-Token` 头，否则一律返回 401。
+  Webhook 先 ack 200 再异步处理，避免慢回答被 Telegram 判定失败而重投。
+- **无公网地址时**：`APP_BASE_URL` 不是公网 HTTPS 时自动回落 `deliveryMode=polling`，
+  由 `server/channels/poller.ts` 的单个 interval 统一拉取 `getUpdates`。这是本地开发便利，不是第二条生产路径。
+- **并发**：同一 contact 同时只跑一次 Agent（内存锁），避免连发三条消息触发三个互相覆盖的 Run。
+- **暂停自动回复**：`autoReply=false` 时只记录消息不回答，用于临时接管。
+
+### 分享链接（web 渠道）
+
+`/a/:publicKey` 是免登录页面。访客身份由浏览器本地的随机 `visitorId` 决定，映射为一个 `channel_contact`，
+因此同一浏览器再次打开能续上历史。公开入口按工作区做了突发限流，`publicChatEnabled=false` 可立即关闭。
+
+**安全**：`workspace_channels.credentials` 保存 bot token，任何面向客户端的响应都必须经 `toChannelDto` 剥离。
+
+---
+
+## 新用户引导
+
+`/onboarding` 是注册后的默认落点，未完成前访问其它页面会被 `useWorkspace` 推回来。四步：
+
+1. **介绍你的业务** —— 工作区名称、客服名称、语气、业务背景。这些直接进入系统提示词。
+2. **导入知识** —— 粘贴 Markdown（`## 标题` 分段）、上传文件，或一键填入示例。
+3. **试聊一次** —— 调用 `chat.ask`（阻塞式单轮，不走 SSE）确认回答质量。
+4. **接出去** —— 复制分享链接，或粘贴 Telegram Bot Token。
+
+进度存在 `workspaces.onboardingStep`，刷新或换设备都能续上；`onboardingCompletedAt` 落库后才算走完。
+每一步都可跳过——引导是帮助，不是关卡。
 
 ---
 
 ## 用户使用手册
 
-- **注册与登录**：用户可通过邮箱密码或 Google OAuth 登录；密码使用 scrypt 哈希，OAuth 使用 Authorization Code + PKCE，浏览器只保存 HttpOnly Cookie。
+- **注册与登录**：邮箱密码或 Google OAuth；密码使用 scrypt 哈希，OAuth 使用 Authorization Code + PKCE，浏览器只保存 HttpOnly Cookie。
+  注册后自动开通工作区并进入 `/onboarding` 四步引导，走完才进工作台。
 - **创建工单**：填写标题、描述、优先级后提交，系统返回工单 ID。
 - **查看工单**：支持按状态/优先级筛选与标题搜索；详情页查看信息、流转状态、添加备注。
 - **智能客服**：在聊天页提问，AI 基于知识库回答并展示引用来源、执行过程和结构化摘要，多轮对话自动保存。
 - **连接恢复**：Agent 回复过程中网络短暂中断时，聊天页会自动按 Run ID 续接已持久化事件；若知识库检索降级为关键词匹配，页面会提示答案需要人工确认。
 - **转为工单**：在 AI 回复上点击“转为工单”，系统会预填简短标题和对话摘要，用户确认后创建工单。
-- **Agent Run 排查**：管理员可在首页输入 Run ID 跳转 `/runs/:runId`，查看 Agent 执行步骤和失败原因。
-- **管理员**：仪表盘查看工单统计与分布；知识库页维护条目与导入文档；RAG 调试页检查召回效果。
+- **Agent Run 排查**：从聊天回复跳转 `/runs/:runId`，查看 Agent 执行步骤和失败原因。
+- **渠道接入**：`/channels` 复制免登录分享链接，或粘贴 Telegram Bot Token 接入。
+  有公网 HTTPS 地址时注册 webhook，否则自动回落到 `getUpdates` 轮询，本地开发同样可用。
+- **客户会话**：`/inbox` 只读查看外部访客的完整对话。想改变回答就去改知识库或客服设置。
 
 **优先级与建议响应时间**：低 2–3 天 / 中 24 小时 / 高 4–8 小时 / 紧急 1–2 小时。
 
@@ -168,7 +259,9 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 
 ```
 client/          前端（pages 页面、components 组件、lib 工具）
-server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、agentRunExecution.ts 执行编排、agentWorker.ts Worker、accessControl.ts 权限边界、db.ts 数据访问、knowledge/ 文档解析与导入、_core/ 框架）
+server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、agentRunExecution.ts 执行编排、
+                 agentWorker.ts Worker、workspace.ts 工作区与 scope、accessControl.ts 权限边界、db.ts 数据访问、
+                 channels/ 渠道适配与入站管线、knowledge/ 文档解析与导入、_core/ 框架）
 drizzle/         schema.ts 表定义 + 迁移文件
 scripts/         seed-data、embed-knowledge 等工具脚本
 compose.yaml     postgres + embeddings 本地服务；Railway demo 使用 app 内置 embedding endpoint
@@ -186,7 +279,7 @@ pnpm worker:dev     # 本地开发 Agent Worker
 pnpm db:generate    # 由 schema 生成迁移
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 灌入示例数据
-pnpm auth:create-admin # 创建或提升管理员账号（需要 ADMIN_EMAIL / ADMIN_PASSWORD）
+pnpm auth:create-user  # 创建账号并开通其工作区（需要 SEED_USER_EMAIL / SEED_USER_PASSWORD）
 pnpm kb:embed       # 为未生成向量的条目回填 embedding
 pnpm kb:embed:check # 检查 embedding 服务连通性
 ```
@@ -194,7 +287,10 @@ pnpm kb:embed:check # 检查 embedding 服务连通性
 ### 扩展约定
 
 - **加表**：改 `drizzle/schema.ts` → `db:generate` → `db:migrate` → 在 `db.ts` 加查询函数。
-- **加接口**：在 `server/routers.ts` 加 procedure（管理员能力需校验 `ctx.user.role`），调用 `db.ts` 函数。
+- **加接口**：在 `server/routers.ts` 用 `workspaceProcedure` 加 procedure，从 `ctx.workspace` / `ctx.scope` 取隔离条件，调用 `db.ts` 函数。
+  任何读写业务数据的 `db.ts` 函数都必须接受并使用 `workspaceId`——这是隔离的唯一保障。
+- **加渠道**：在 `server/channels/` 实现 `ChannelAdapter`，注册进 `inbound.ts` 的 `ADAPTERS`，
+  并在 `types.ts` 的 `CHANNEL_PROVIDERS` 标记为 available。入站统一走 `handleInboundChannelMessage`。
 - **加页面**：在 `client/src/pages/` 建组件，用 `trpc.*.useQuery/useMutation` 取数，在 `App.tsx` 注册路由。
 - **加 Agent 工具**：在 `server/agentService.ts` 定义 tool、入参 schema、权限校验、脱敏摘要和事件持久化。
 - **加流式能力**：在 `server/chatStream.ts` 扩展 SSE payload，并同步更新聊天页事件处理。
@@ -229,10 +325,10 @@ APP_BASE_URL=https://your-app.example.com
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 
-# 管理员初始化命令使用，不需要长期注入应用运行环境
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=replace-with-a-strong-password
-ADMIN_NAME=系统管理员
+# 命令行开号使用，不需要长期注入应用运行环境
+SEED_USER_EMAIL=demo@example.com
+SEED_USER_PASSWORD=replace-with-a-strong-password
+SEED_USER_NAME=示例用户
 
 # LLM（OpenAI 兼容）
 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
@@ -316,6 +412,7 @@ Agent 模式的 Railway 部署需要单独创建 `agent-worker` Service。Web Se
 | LLM | OpenAI Agents SDK |
 | Agent | OpenAI Agents SDK |
 | 认证 | 邮箱密码 + Google OAuth + PostgreSQL Session |
+| 渠道 | Telegram Bot API（webhook / getUpdates 轮询） |
 
 ### 参考
 

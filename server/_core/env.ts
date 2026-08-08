@@ -38,8 +38,10 @@ export const ENV = {
     (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000"),
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-  demoAdminEmail: process.env.DEMO_ADMIN_EMAIL ?? "",
-  demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
+  demoAccountEmail:
+    process.env.DEMO_ACCOUNT_EMAIL ?? process.env.DEMO_ADMIN_EMAIL ?? "",
+  demoAccountPassword:
+    process.env.DEMO_ACCOUNT_PASSWORD ?? process.env.DEMO_ADMIN_PASSWORD ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
   queueRedisUrl: process.env.QUEUE_REDIS_URL ?? process.env.REDIS_URL ?? "",
   knowledgeStorageEndpoint: process.env.AWS_ENDPOINT_URL ?? "",
@@ -120,10 +122,6 @@ export const ENV = {
     16_000,
     0,
     MAX_TOKEN_QUOTA
-  ),
-  agentTokenQuotaAdminExempt: strictBoolean(
-    process.env.AGENT_TOKEN_QUOTA_ADMIN_EXEMPT,
-    false
   ),
   otelEnabled:
     process.env.OTEL_ENABLED === "true" ||

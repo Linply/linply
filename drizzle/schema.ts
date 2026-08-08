@@ -24,6 +24,50 @@ import {
 } from "../shared/knowledge";
 
 export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
+/**
+ * 每个登录用户拥有自己的工作区，所有业务数据按 workspaceId 隔离。
+ * 渠道 provider：web 为工作区自带的分享链接/网页挂件，其余为外部 IM。
+ */
+export const channelProviderEnum = pgEnum("channel_provider", [
+  "web",
+  "telegram",
+  "slack",
+  "feishu",
+]);
+/**
+ * 渠道连接状态：
+ * pending 已创建但凭证未验证；connected 凭证有效且可收发消息；error 最近一次校验或投递失败；disabled 用户主动停用。
+ */
+export const channelStatusEnum = pgEnum("channel_status", [
+  "pending",
+  "connected",
+  "error",
+  "disabled",
+]);
+/**
+ * 订阅套餐。billing 尚未接入支付：所有工作区默认 free，
+ * 套餐只驱动用量额度与功能开关，升级请求先记录成待处理意向。
+ */
+export const workspacePlanEnum = pgEnum("workspace_plan", [
+  "free",
+  "pro",
+  "business",
+  "self_hosted",
+]);
+/** 升级意向的处理状态，付费接入后由计费回调改写。 */
+export const planRequestStatusEnum = pgEnum("plan_request_status", [
+  "pending",
+  "approved",
+  "cancelled",
+]);
+/** 工作区新手引导所处的步骤，done 表示已走完全流程。 */
+export const onboardingStepEnum = pgEnum("onboarding_step", [
+  "profile",
+  "knowledge",
+  "preview",
+  "channel",
+  "done",
+]);
 export const ticketStatusEnum = pgEnum("ticket_status", [
   "pending",
   "in_progress",
@@ -201,6 +245,191 @@ export type OAuthState = typeof oauthStates.$inferSelect;
 export type InsertOAuthState = typeof oauthStates.$inferInsert;
 
 /**
+ * Workspaces table - 工作区
+ * 每个登录用户自动拥有一个工作区，代表 TA 自己维护的那套智能客服：
+ * 知识、会话、工单、渠道连接全部按 workspaceId 隔离，系统内不存在跨工作区的管理员视角。
+ */
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: serial("id").primaryKey(),
+    ownerUserId: integer("ownerUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 80 }).notNull(), // 工作区名称，默认取用户名
+    /** 分享链接与网页挂件使用的公开标识，不可反推工作区内部 ID。 */
+    publicKey: varchar("publicKey", { length: 32 }).notNull(),
+    agentName: varchar("agentName", { length: 60 })
+      .default("智能客服")
+      .notNull(), // 对外展示的客服名称
+    agentTone: varchar("agentTone", { length: 16 })
+      .default("friendly")
+      .notNull(), // professional | friendly | concise，用于生成 Agent 语气指令
+    greeting: text("greeting"), // 会话开场白；为空时使用默认文案
+    fallbackReply: text("fallbackReply"), // 知识库无法回答时的兜底话术
+    businessContext: text("businessContext"), // 用户填写的业务简介，作为 Agent 的背景知识
+    publicChatEnabled: boolean("publicChatEnabled").default(true).notNull(), // 是否开放免登录分享链接
+    plan: workspacePlanEnum("plan").default("free").notNull(), // 当前套餐，决定额度与功能开关
+    planActivatedAt: timestamp("planActivatedAt", { withTimezone: true }), // 当前套餐生效时间；free 为 null
+    onboardingStep: onboardingStepEnum("onboardingStep")
+      .default("profile")
+      .notNull(),
+    onboardingCompletedAt: timestamp("onboardingCompletedAt", {
+      withTimezone: true,
+    }),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    ownerUnique: uniqueIndex("idx_workspaces_ownerUserId").on(
+      table.ownerUserId
+    ),
+    publicKeyUnique: uniqueIndex("idx_workspaces_publicKey").on(
+      table.publicKey
+    ),
+  })
+);
+
+export type Workspace = typeof workspaces.$inferSelect;
+export type InsertWorkspace = typeof workspaces.$inferInsert;
+
+/**
+ * Plan change requests. Payment is not wired up yet, so an upgrade records the
+ * intent here instead of charging; once billing lands this table becomes the
+ * audit trail in front of it.
+ */
+export const planRequests = pgTable(
+  "plan_requests",
+  {
+    id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    requestedBy: integer("requestedBy")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fromPlan: workspacePlanEnum("fromPlan").notNull(),
+    toPlan: workspacePlanEnum("toPlan").notNull(),
+    status: planRequestStatusEnum("status").default("pending").notNull(),
+    note: text("note"),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    resolvedAt: timestamp("resolvedAt", { withTimezone: true }),
+  },
+  table => ({
+    workspaceIdIdx: index("idx_plan_requests_workspaceId").on(
+      table.workspaceId
+    ),
+    // At most one open request per workspace, so repeated clicks are idempotent.
+    openRequestUnique: uniqueIndex("idx_plan_requests_open_unique")
+      .on(table.workspaceId)
+      .where(sql`status = 'pending'`),
+  })
+);
+
+export type PlanRequest = typeof planRequests.$inferSelect;
+export type InsertPlanRequest = typeof planRequests.$inferInsert;
+
+/**
+ * Workspace channels table - 渠道连接
+ * 一个工作区的每种 provider 至多一条连接。`credentials` 保存 bot token 等密钥，
+ * 只能在服务端读取，任何面向客户端的 DTO 都必须剔除该字段。
+ */
+export const workspaceChannels = pgTable(
+  "workspace_channels",
+  {
+    id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    provider: channelProviderEnum("provider").notNull(),
+    status: channelStatusEnum("status").default("pending").notNull(),
+    displayName: varchar("displayName", { length: 120 }), // 渠道展示名，例如 Telegram Bot 的 @username
+    externalId: varchar("externalId", { length: 128 }), // 渠道侧标识，例如 Telegram bot id
+    credentials: jsonb("credentials")
+      .$type<Record<string, string>>()
+      .default(sql`'{}'::jsonb`)
+      .notNull(), // 服务端专用凭证
+    /** 出现在 webhook URL 路径中的随机串，同时用作 Telegram secret_token。 */
+    webhookSecret: varchar("webhookSecret", { length: 64 }).notNull(),
+    deliveryMode: varchar("deliveryMode", { length: 16 })
+      .default("webhook")
+      .notNull(), // webhook | polling；本地无公网地址时回落到 polling
+    pollOffset: bigint("pollOffset", { mode: "number" }).default(0).notNull(), // Telegram getUpdates 游标
+    autoReply: boolean("autoReply").default(true).notNull(), // 关闭后只收集消息不自动回复
+    lastEventAt: timestamp("lastEventAt", { withTimezone: true }),
+    lastError: text("lastError"),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    workspaceProviderUnique: uniqueIndex(
+      "idx_workspace_channels_workspaceId_provider"
+    ).on(table.workspaceId, table.provider),
+    webhookSecretUnique: uniqueIndex(
+      "idx_workspace_channels_webhookSecret"
+    ).on(table.webhookSecret),
+    workspaceIdIdx: index("idx_workspace_channels_workspaceId").on(
+      table.workspaceId
+    ),
+  })
+);
+
+export type WorkspaceChannel = typeof workspaceChannels.$inferSelect;
+export type InsertWorkspaceChannel = typeof workspaceChannels.$inferInsert;
+
+/**
+ * Channel contacts table - 外部访客
+ * 通过渠道联系工作区的终端客户。他们不注册、不登录，靠 (channelId, externalId) 识别。
+ */
+export const channelContacts = pgTable(
+  "channel_contacts",
+  {
+    id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    channelId: integer("channelId")
+      .notNull()
+      .references(() => workspaceChannels.id, { onDelete: "cascade" }),
+    provider: channelProviderEnum("provider").notNull(),
+    externalId: varchar("externalId", { length: 128 }).notNull(), // 渠道侧用户 ID
+    externalChatId: varchar("externalChatId", { length: 128 }), // 回信目标会话 ID
+    displayName: varchar("displayName", { length: 160 }),
+    username: varchar("username", { length: 120 }),
+    locale: varchar("locale", { length: 16 }),
+    messageCount: integer("messageCount").default(0).notNull(),
+    lastMessageAt: timestamp("lastMessageAt", { withTimezone: true }),
+    createdAt: timestamp("createdAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  table => ({
+    channelExternalUnique: uniqueIndex(
+      "idx_channel_contacts_channelId_externalId"
+    ).on(table.channelId, table.externalId),
+    workspaceLastMessageIdx: index(
+      "idx_channel_contacts_workspaceId_lastMessageAt"
+    ).on(table.workspaceId, table.lastMessageAt),
+  })
+);
+
+export type ChannelContact = typeof channelContacts.$inferSelect;
+export type InsertChannelContact = typeof channelContacts.$inferInsert;
+
+/**
  * Tickets table - 工单表
  * 存储客户工单信息，包括状态、优先级、标题、描述等
  */
@@ -208,12 +437,21 @@ export const tickets = pgTable(
   "tickets",
   {
     id: serial("id").primaryKey(),
-    userId: integer("userId").notNull(), // 创建工单的用户 ID
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }), // 归属工作区
+    userId: integer("userId").notNull(), // 工作区内发起工单的登录用户（渠道来单时为工作区所有者）
+    contactId: integer("contactId").references(() => channelContacts.id, {
+      onDelete: "set null",
+    }), // 提出诉求的外部访客；工作区自己创建的工单为 null
+    channelId: integer("channelId").references(() => workspaceChannels.id, {
+      onDelete: "set null",
+    }), // 工单来源渠道
     title: varchar("title", { length: 255 }).notNull(), // 工单标题
     description: text("description").notNull(), // 工单描述
     status: ticketStatusEnum("status").default("pending").notNull(), // 工单状态
     priority: ticketPriorityEnum("priority").default("medium").notNull(), // 优先级
-    assignedTo: integer("assignedTo"), // 分配给的管理员 ID（可选）
+    assignedTo: integer("assignedTo"), // 分配给的工作区成员 ID（可选）
     createdAt: timestamp("createdAt", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -226,6 +464,8 @@ export const tickets = pgTable(
     userIdIdx: index("idx_userId").on(table.userId),
     statusIdx: index("idx_status").on(table.status),
     priorityIdx: index("idx_priority").on(table.priority),
+    workspaceIdIdx: index("idx_tickets_workspaceId").on(table.workspaceId),
+    contactIdIdx: index("idx_tickets_contactId").on(table.contactId),
   })
 );
 
@@ -264,6 +504,9 @@ export const knowledgeBase = pgTable(
   "knowledge_base",
   {
     id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }), // 归属工作区；检索永远带上该过滤条件
     title: varchar("title", { length: 255 }).notNull(), // 知识库条目标题（导入文档时标题可能重复，故不再全局唯一）
     content: text("content").notNull(), // 知识库条目内容
     category: varchar("category", { length: 100 }).notNull(), // 分类（FAQ、产品说明、政策等）
@@ -313,11 +556,19 @@ export const knowledgeBase = pgTable(
       table.securityStatus
     ),
     documentIdIdx: index("idx_knowledge_base_documentId").on(table.documentId),
-    embeddingIdx: index("idx_knowledge_base_embedding_hnsw")
-      .using("hnsw", table.embedding.op("vector_cosine_ops"))
+    /**
+     * 检索永远先按 workspaceId 收敛，再在该子集内做精确余弦排序。
+     * 全局 HNSW 索引在带 workspace 过滤时会因 ef_search 候选被过滤而丢召回，
+     * 而单个工作区的条目量级下精确扫描既准确又足够快，因此不再维护向量索引。
+     */
+    workspaceSearchIdx: index("idx_knowledge_base_workspaceId_searchable")
+      .on(table.workspaceId)
       .where(
         sql`${table.embedding} IS NOT NULL AND ${table.securityStatus} = 'approved'`
       ),
+    workspaceIdIdx: index("idx_knowledge_base_workspaceId").on(
+      table.workspaceId
+    ),
   })
 );
 
@@ -332,6 +583,9 @@ export const knowledgeDocuments = pgTable(
   "knowledge_documents",
   {
     id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }), // 归属工作区
     filename: varchar("filename", { length: 255 }).notNull(), // 原始文件名
     fileType: varchar("fileType", { length: 16 }).notNull(), // markdown | csv
     status: knowledgeDocumentStatusEnum("status").default("pending").notNull(),
@@ -364,6 +618,9 @@ export const knowledgeDocuments = pgTable(
   },
   table => ({
     statusIdx: index("idx_knowledge_documents_status").on(table.status),
+    workspaceIdIdx: index("idx_knowledge_documents_workspaceId").on(
+      table.workspaceId
+    ),
   })
 );
 
@@ -430,8 +687,17 @@ export const chatMessages = pgTable(
   "chat_messages",
   {
     id: serial("id").primaryKey(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }), // 归属工作区
     ticketId: integer("ticketId"), // 关联的工单 ID（可选）
-    userId: integer("userId").notNull(), // 用户 ID
+    userId: integer("userId").notNull(), // 工作区所有者 ID；渠道会话同样记在所有者名下
+    contactId: integer("contactId").references(() => channelContacts.id, {
+      onDelete: "cascade",
+    }), // 外部访客；工作区内自己的测试对话为 null
+    channelId: integer("channelId").references(() => workspaceChannels.id, {
+      onDelete: "set null",
+    }), // 消息来源渠道
     role: chatMessageRoleEnum("role").notNull(), // 消息角色
     content: text("content").notNull(), // 消息内容
     relatedKnowledgeIds: jsonb("relatedKnowledgeIds").$type<number[]>(), // 关联的知识库 ID 列表
@@ -452,6 +718,13 @@ export const chatMessages = pgTable(
   table => ({
     userIdIdx: index("idx_userId_chat").on(table.userId),
     ticketIdIdx: index("idx_ticketId_chat").on(table.ticketId),
+    workspaceIdIdx: index("idx_chat_messages_workspaceId").on(
+      table.workspaceId
+    ),
+    contactIdIdx: index("idx_chat_messages_contactId_id").on(
+      table.contactId,
+      table.id
+    ),
     agentRunIdIdx: index("idx_chat_messages_agentRunId").on(table.agentRunId),
     agentRunRoleUnique: uniqueIndex("idx_chat_messages_agentRunId_role_unique")
       .on(table.agentRunId, table.role)
@@ -509,7 +782,16 @@ export const agentRuns = pgTable(
   "agent_runs",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    userId: integer("userId").notNull(),
+    workspaceId: integer("workspaceId")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }), // 归属工作区
+    userId: integer("userId").notNull(), // 计费与配额归属的登录用户（工作区所有者）
+    contactId: integer("contactId").references(() => channelContacts.id, {
+      onDelete: "set null",
+    }), // 触发本次运行的外部访客
+    channelId: integer("channelId").references(() => workspaceChannels.id, {
+      onDelete: "set null",
+    }), // 触发本次运行的渠道
     ticketId: integer("ticketId"),
     status: agentRunStatusEnum("status").default("queued").notNull(),
     input: text("input").notNull(),
@@ -551,6 +833,7 @@ export const agentRuns = pgTable(
   },
   table => ({
     userIdIdx: index("idx_agent_runs_userId").on(table.userId),
+    workspaceIdIdx: index("idx_agent_runs_workspaceId").on(table.workspaceId),
     ticketIdIdx: index("idx_agent_runs_ticketId").on(table.ticketId),
     statusIdx: index("idx_agent_runs_status").on(table.status),
     statusLeaseIdx: index("idx_agent_runs_status_lease").on(

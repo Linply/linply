@@ -2,7 +2,8 @@ import type { Express, Request, Response } from "express";
 import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import type { KnowledgeRetrieval } from "./db";
-import { getTicketForUser } from "./accessControl";
+import { getTicketForScope } from "./accessControl";
+import { consoleScope, requireWorkspaceForUser } from "./workspace";
 import {
   type AgentEvent,
   type AgentRunStats,
@@ -70,11 +71,10 @@ const streamAgentRunEvents = async (
   res: Response,
   runId: string,
   afterSeq: number,
-  userId: number,
-  isAdmin: boolean
+  workspaceId: number
 ) => {
   const run = await db.getAgentRunById(runId);
-  if (!run || (!isAdmin && run.userId !== userId)) {
+  if (!run || run.workspaceId !== workspaceId) {
     res.statusCode = 404;
     writeSse(res, { type: "error", message: "Agent Run 不存在或无权访问" });
     return;
@@ -139,6 +139,8 @@ export function registerChatStreamRoutes(app: Express) {
   app.post("/api/chat/start", async (req: Request, res: Response) => {
     try {
       const user = await authenticateRequest(req);
+      const workspace = await requireWorkspaceForUser(user);
+      const scope = consoleScope(workspace);
       const content = typeof req.body?.content === "string"
         ? req.body.content.trim()
         : "";
@@ -152,7 +154,7 @@ export function registerChatStreamRoutes(app: Express) {
       }
       if (ticketId !== undefined) {
         try {
-          await getTicketForUser(ticketId, user);
+          await getTicketForScope(ticketId, scope);
         } catch {
           res.status(403).json({ error: "无权访问该工单" });
           return;
@@ -160,8 +162,7 @@ export function registerChatStreamRoutes(app: Express) {
       }
 
       const run = await enqueueAgentRun({
-        userId: user.id,
-        userRole: user.role,
+        scope,
         ticketId,
         content,
       });
@@ -187,19 +188,14 @@ export function registerChatStreamRoutes(app: Express) {
     configureSse(res);
     try {
       const user = await authenticateRequest(req);
+      const workspace = await requireWorkspaceForUser(user);
       const afterSeqValue = Number(
         req.query.afterSeq ?? req.headers["last-event-id"] ?? 0
       );
       const afterSeq = Number.isFinite(afterSeqValue) && afterSeqValue > 0
         ? Math.floor(afterSeqValue)
         : 0;
-      await streamAgentRunEvents(
-        res,
-        req.params.runId,
-        afterSeq,
-        user.id,
-        user.role === "admin"
-      );
+      await streamAgentRunEvents(res, req.params.runId, afterSeq, workspace.id);
     } catch (error) {
       if (!res.writableEnded) sendSseError(res, error);
     } finally {

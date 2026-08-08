@@ -9,6 +9,9 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerChatStreamRoutes } from "../chatStream";
 import { registerGoogleOAuthRoutes } from "./googleOAuth";
+import { registerChannelRoutes } from "../channels/routes";
+import { registerPublicChatRoutes } from "../channels/publicChat";
+import { startChannelPoller } from "../channels/poller";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -41,6 +44,8 @@ async function startServer() {
   registerLocalEmbeddingRoutes(app);
   registerGoogleOAuthRoutes(app);
   registerChatStreamRoutes(app);
+  registerChannelRoutes(app);
+  registerPublicChatRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",
@@ -65,6 +70,8 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    // Drains Telegram getUpdates for channels that could not register a webhook.
+    startChannelPoller();
   });
 }
 

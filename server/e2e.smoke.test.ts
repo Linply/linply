@@ -3,6 +3,8 @@ import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({
   createTicket: vi.fn(),
+  createWorkspaceForOwner: vi.fn(),
+  getWorkspaceByOwner: vi.fn(),
   listTickets: vi.fn(),
 }));
 
@@ -30,14 +32,37 @@ const ctx: TrpcContext = {
   res: {} as TrpcContext["res"],
 };
 
+const workspace = {
+  id: 3,
+  ownerUserId: user.id,
+  name: "本地开发用户 的客服",
+  publicKey: "b".repeat(24),
+  agentName: "智能客服",
+  agentTone: "friendly",
+  greeting: null,
+  fallbackReply: null,
+  businessContext: null,
+  publicChatEnabled: true,
+  plan: "free" as const,
+  planActivatedAt: null,
+  onboardingStep: "done" as const,
+  onboardingCompletedAt: new Date(),
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
 describe("basic authenticated smoke flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedDb.getWorkspaceByOwner.mockResolvedValue(workspace as never);
     mockedDb.createTicket.mockResolvedValue({ id: 77 });
     mockedDb.listTickets.mockResolvedValue([
       {
         id: 77,
+        workspaceId: 3,
         userId: 5,
+        contactId: null,
+        channelId: null,
         title: "订单物流异常",
         description: "物流三天未更新",
         status: "pending",
@@ -50,7 +75,7 @@ describe("basic authenticated smoke flow", () => {
     ]);
   });
 
-  it("creates a ticket and lists it for the signed-in user", async () => {
+  it("creates a ticket and lists it inside the caller's workspace", async () => {
     const caller = appRouter.createCaller(ctx);
 
     const created = await caller.tickets.create({
@@ -62,6 +87,7 @@ describe("basic authenticated smoke flow", () => {
 
     expect(created).toEqual({ id: 77 });
     expect(mockedDb.createTicket).toHaveBeenCalledWith({
+      workspaceId: 3,
       userId: 5,
       title: "订单物流异常",
       description: "物流三天未更新",
@@ -70,7 +96,7 @@ describe("basic authenticated smoke flow", () => {
     expect(mockedDb.listTickets).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "pending",
-        userId: 5,
+        workspaceId: 3,
         limit: 20,
         offset: 0,
       })

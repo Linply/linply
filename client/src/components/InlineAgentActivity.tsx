@@ -87,13 +87,13 @@ function ActivityRow({
         {!last ? (
           <span
             aria-hidden="true"
-            className="absolute bottom-[-0.5rem] left-[0.1875rem] top-3 w-px bg-gray-300"
+            className="absolute bottom-[-0.5rem] left-[0.1875rem] top-3 w-px bg-muted-foreground/60"
           />
         ) : null}
         <span
           aria-hidden="true"
           className={`absolute left-0 top-[0.5625rem] size-1.5 rounded-full ring-2 ring-background ${
-            complete ? "bg-gray-400" : "bg-blue-500"
+            complete ? "bg-muted-foreground" : "bg-blue-500"
           }`}
         >
           {!complete ? (
@@ -104,19 +104,19 @@ function ActivityRow({
           <button
             type="button"
             disabled={!hasDetails}
-            className="group flex min-h-6 w-full items-center gap-2 py-0.5 text-left text-[13px] leading-5 text-gray-500 disabled:cursor-default"
+            className="group flex min-h-6 w-full items-center gap-2 py-0.5 text-left text-[13px] leading-5 text-muted-foreground disabled:cursor-default"
             aria-label={`${getActivityTitle(item)}${hasDetails ? "，展开详情" : ""}`}
           >
-            <Icon className="size-4 shrink-0 text-gray-500" />
-            <span className="min-w-0 truncate group-hover:text-gray-700">
+            <Icon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate group-hover:text-foreground">
               {getActivityTitle(item)}
             </span>
             {complete ? (
-              <CheckCircle2 className="size-3.5 shrink-0 text-gray-400" />
+              <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />
             ) : null}
             {hasDetails ? (
               <ChevronDown
-                className={`size-3.5 shrink-0 text-gray-400 transition-transform duration-200 ${
+                className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${
                   open ? "rotate-180" : ""
                 }`}
               />
@@ -124,7 +124,7 @@ function ActivityRow({
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="space-y-2 pb-2 pt-1 text-xs text-gray-600">
+          <div className="space-y-2 pb-2 pt-1 text-xs text-muted-foreground">
             {item.event.argsSummary ? (
               <ToolArgsViewer value={item.event.argsSummary} />
             ) : null}
@@ -157,8 +157,8 @@ export function AgentWorkingStatus({ visible }: { visible: boolean }) {
       inert={!visible}
     >
       <div className="min-h-0 overflow-hidden">
-        <div className="flex min-h-6 items-center gap-2 py-0.5 text-[13px] leading-5 text-gray-500">
-          <Hammer className="size-4 shrink-0 animate-bounce text-gray-700 motion-reduce:animate-none" />
+        <div className="flex min-h-6 items-center gap-2 py-0.5 text-[13px] leading-5 text-muted-foreground">
+          <Hammer className="size-4 shrink-0 animate-bounce text-muted-foreground motion-reduce:animate-none" />
           <span>loading...</span>
         </div>
       </div>

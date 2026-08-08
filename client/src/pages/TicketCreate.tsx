@@ -1,5 +1,5 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
+import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,7 +24,7 @@ const priorityOptions = [
 ];
 
 export default function TicketCreate() {
-  useAuth({ redirectOnUnauthenticated: true });
+  const t = useT();
   const [, setLocation] = useLocation();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -54,26 +54,22 @@ export default function TicketCreate() {
   const selectedPriority = priorityOptions.find(option => option.value === priority);
 
   return (
-    <div className="min-h-screen bg-background pt-[5.75rem]">
-      <PageNav />
-      <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
+    <AppShell
+      title={t.tickets.createTitle}
+      description={t.tickets.createSubtitle}
+      maxWidth="wide"
+    >
+      <div>
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_17rem]">
           <section>
-            <header className="mb-6">
-              <p className="text-sm text-gray-500">新建服务请求</p>
-              <h1 className="mt-1 text-2xl font-semibold text-gray-950">创建工单</h1>
-              <p className="mt-2 text-sm leading-6 text-gray-500">
-                提供清晰的问题背景和期望结果，便于客服快速处理。
-              </p>
-            </header>
 
             <form
               onSubmit={handleSubmit}
-              className="overflow-hidden rounded-lg border border-gray-200 bg-white"
+              className="overflow-hidden rounded-lg border border-border bg-card"
             >
               <div className="space-y-6 p-5 sm:p-6">
                 <div>
-                  <label htmlFor="ticket-title" className="mb-2 block text-sm font-medium text-gray-800">
+                  <label htmlFor="ticket-title" className="mb-2 block text-sm font-medium text-foreground">
                     标题
                   </label>
                   <Input
@@ -84,13 +80,13 @@ export default function TicketCreate() {
                     maxLength={120}
                     required
                   />
-                  <p className="mt-1.5 text-right text-xs tabular-nums text-gray-400">
+                  <p className="mt-1.5 text-right text-xs tabular-nums text-muted-foreground">
                     {title.length}/120
                   </p>
                 </div>
 
                 <div>
-                  <label htmlFor="ticket-description" className="mb-2 block text-sm font-medium text-gray-800">
+                  <label htmlFor="ticket-description" className="mb-2 block text-sm font-medium text-foreground">
                     问题描述
                   </label>
                   <Textarea
@@ -105,7 +101,7 @@ export default function TicketCreate() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-800">优先级</label>
+                  <label className="mb-2 block text-sm font-medium text-foreground">优先级</label>
                   <Select value={priority} onValueChange={setPriority}>
                     <SelectTrigger className="w-full">
                       <SelectValue />
@@ -118,11 +114,11 @@ export default function TicketCreate() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="mt-2 text-xs text-gray-500">{selectedPriority?.description}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">{selectedPriority?.description}</p>
                 </div>
               </div>
 
-              <footer className="flex flex-col-reverse gap-2 border-t border-gray-100 bg-gray-50 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+              <footer className="flex flex-col-reverse gap-2 border-t border-border bg-muted/60 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
                 <Button type="button" variant="outline" onClick={() => setLocation("/tickets")}>
                   取消
                 </Button>
@@ -137,9 +133,9 @@ export default function TicketCreate() {
             </form>
           </section>
 
-          <aside className="border-t border-gray-200 pt-6 lg:border-l lg:border-t-0 lg:pl-7 lg:pt-1">
-            <h2 className="text-sm font-semibold text-gray-900">提交前检查</h2>
-            <div className="mt-4 space-y-4 text-sm text-gray-500">
+          <aside className="border-t border-border pt-6 lg:border-l lg:border-t-0 lg:pl-7 lg:pt-1">
+            <h2 className="text-sm font-semibold text-foreground">提交前检查</h2>
+            <div className="mt-4 space-y-4 text-sm text-muted-foreground">
               <p className="flex gap-2 leading-5">
                 <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
                 标题能明确定位问题
@@ -155,7 +151,7 @@ export default function TicketCreate() {
             </div>
           </aside>
         </div>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

@@ -3,6 +3,7 @@ import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({
   addTicketNote: vi.fn(),
+  createWorkspaceForOwner: vi.fn(),
   getAgentRunById: vi.fn(),
   getAgentRunSummaries: vi.fn(),
   getAgentRunWithSteps: vi.fn(),
@@ -13,6 +14,8 @@ vi.mock("./db", () => ({
   getTicketById: vi.fn(),
   getTicketChatHistory: vi.fn(),
   getTicketNotes: vi.fn(),
+  getWorkspaceByOwner: vi.fn(),
+  getWorkspacePlanUsage: vi.fn(),
   listTickets: vi.fn(),
   updateTicket: vi.fn(),
 }));
@@ -39,9 +42,35 @@ const userA = {
   lastSignedIn: new Date(),
 };
 
+const WORKSPACE_A_ID = 1;
+const WORKSPACE_B_ID = 2;
+
+const workspaceA = {
+  id: WORKSPACE_A_ID,
+  ownerUserId: userA.id,
+  name: "User A 的客服",
+  publicKey: "a".repeat(24),
+  agentName: "智能客服",
+  agentTone: "friendly",
+  greeting: null,
+  fallbackReply: null,
+  businessContext: null,
+  publicChatEnabled: true,
+  plan: "free" as const,
+  planActivatedAt: null,
+  onboardingStep: "done" as const,
+  onboardingCompletedAt: new Date(),
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+/** Both fixtures below live in workspace B, which user A must never reach. */
 const ticketB = {
   id: 9001,
+  workspaceId: WORKSPACE_B_ID,
   userId: 202,
+  contactId: null,
+  channelId: null,
   title: "B 的工单",
   description: "仅 B 可见",
   status: "pending" as const,
@@ -54,7 +83,10 @@ const ticketB = {
 
 const runB = {
   id: "11111111-1111-4111-8111-111111111111",
+  workspaceId: WORKSPACE_B_ID,
   userId: 202,
+  contactId: null,
+  channelId: null,
   ticketId: ticketB.id,
   status: "completed" as const,
   input: "查询 B 的工单",
@@ -75,16 +107,22 @@ const createContext = (user = userA): TrpcContext => ({
   res: {} as TrpcContext["res"],
 });
 
-describe("user resource isolation", () => {
+describe("workspace resource isolation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedDb.getTicketById.mockResolvedValue(ticketB);
+    mockedDb.getWorkspaceByOwner.mockResolvedValue(workspaceA as never);
+    mockedDb.getWorkspacePlanUsage.mockResolvedValue({
+      knowledgeEntries: 0,
+      connectedChannels: 0,
+      monthlyContacts: 0,
+    });
+    mockedDb.getTicketById.mockResolvedValue(ticketB as never);
     mockedDb.getAgentRunWithSteps.mockResolvedValue({
       ...runB,
       steps: [],
-    });
-    mockedDb.getAgentRunById.mockResolvedValue(runB);
-    mockedDb.getAgentRunSummaries.mockResolvedValue([]);
+    } as never);
+    mockedDb.getAgentRunById.mockResolvedValue(runB as never);
+    mockedDb.getAgentRunSummaries.mockResolvedValue([] as never);
     mockedDb.getTokenQuota.mockResolvedValue({
       bucketDate: "2026-07-30",
       resetAt: "2026-07-31T00:00:00.000Z",
@@ -121,10 +159,10 @@ describe("user resource isolation", () => {
     expect(mockedDb.addTicketNote).not.toHaveBeenCalled();
   });
 
-  it("pushes A's identity into ticket list queries", async () => {
-    mockedDb.listTickets.mockImplementation(async filters => {
-      return filters?.userId === userA.id ? [] : [ticketB];
-    });
+  it("pushes A's workspace into ticket list queries", async () => {
+    mockedDb.listTickets.mockImplementation(async filters =>
+      filters?.workspaceId === WORKSPACE_A_ID ? [] : [ticketB as never]
+    );
 
     const caller = appRouter.createCaller(createContext());
     const tickets = await caller.tickets.list({});
@@ -136,18 +174,25 @@ describe("user resource isolation", () => {
       search: undefined,
       limit: 20,
       offset: 0,
-      userId: userA.id,
+      workspaceId: WORKSPACE_A_ID,
     });
   });
 
-  it("pushes A's identity into unscoped chat history queries", async () => {
-    mockedDb.getChatHistory.mockResolvedValue([]);
-    mockedDb.getKnowledgeByIds.mockResolvedValue([]);
+  it("scopes unscoped chat history to A's own console thread", async () => {
+    mockedDb.getChatHistory.mockResolvedValue([] as never);
+    mockedDb.getKnowledgeByIds.mockResolvedValue([] as never);
 
     const caller = appRouter.createCaller(createContext());
     await expect(caller.chat.getHistory({})).resolves.toEqual([]);
 
-    expect(mockedDb.getChatHistory).toHaveBeenCalledWith(userA.id, undefined, 50);
+    expect(mockedDb.getChatHistory).toHaveBeenCalledWith(
+      { workspaceId: WORKSPACE_A_ID, contactId: null, ticketId: undefined },
+      50
+    );
+    expect(mockedDb.getKnowledgeByIds).toHaveBeenCalledWith(
+      WORKSPACE_A_ID,
+      []
+    );
     expect(mockedDb.getAgentRunSummaries).toHaveBeenCalledWith([]);
   });
 
@@ -158,7 +203,7 @@ describe("user resource isolation", () => {
       resetAt: "2026-07-31T00:00:00.000Z",
       enforced: false,
     });
-    expect(mockedDb.getTokenQuota).toHaveBeenCalledWith(userA.id, userA.role);
+    expect(mockedDb.getTokenQuota).toHaveBeenCalledWith(userA.id, "free");
   });
 
   it("rejects A from B's Agent Run detail and retry endpoints", async () => {
@@ -171,5 +216,19 @@ describe("user resource isolation", () => {
 
     expect(mockedDb.getAgentRunWithSteps).toHaveBeenCalledWith(runB.id);
     expect(mockedDb.getAgentRunById).toHaveBeenCalledWith(runB.id);
+  });
+
+  it("provisions a workspace on first access instead of failing", async () => {
+    mockedDb.getWorkspaceByOwner.mockResolvedValueOnce(null);
+    mockedDb.createWorkspaceForOwner.mockResolvedValue(workspaceA as never);
+    mockedDb.listTickets.mockResolvedValue([] as never);
+
+    const caller = appRouter.createCaller(createContext());
+    await expect(caller.tickets.list({})).resolves.toEqual([]);
+
+    expect(mockedDb.createWorkspaceForOwner).toHaveBeenCalledWith({
+      userId: userA.id,
+      name: "User A 的客服",
+    });
   });
 });

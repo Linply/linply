@@ -186,7 +186,10 @@ describe("agent tool validation and summaries", () => {
     vi.spyOn(db, "listTickets").mockResolvedValue([
       {
         id: 7,
+        workspaceId: 3,
         userId: 42,
+        contactId: null,
+        channelId: null,
         title: "物流异常",
         description: "订单状态长时间未更新",
         status: "pending",
@@ -199,7 +202,14 @@ describe("agent tool validation and summaries", () => {
     ]);
 
     const runContext = {
-      context: { userId: 42, role: "user" },
+      context: {
+        scope: {
+          workspaceId: 3,
+          ownerUserId: 42,
+          contactId: null,
+          channelId: null,
+        },
+      },
     } as Parameters<NonNullable<typeof searchTool>["invoke"]>[0];
 
     const failedToolResult = await searchTool!.invoke(
@@ -225,7 +235,7 @@ describe("agent tool validation and summaries", () => {
       },
     ]);
     expect(db.listTickets).toHaveBeenCalledWith({
-      userId: 42,
+      workspaceId: 3,
       limit: 5,
       offset: 0,
     });
@@ -255,8 +265,12 @@ describe("agent tool validation and summaries", () => {
         context: {
           runId,
           rootRunId: runId,
-          userId: 42,
-          role: "user",
+scope: {
+            workspaceId: 3,
+            ownerUserId: 42,
+            contactId: null,
+            channelId: null,
+          },
           currentUserMessage,
           authorization: deriveAgentWriteAuthorization(currentUserMessage),
         },
@@ -310,8 +324,12 @@ describe("agent tool validation and summaries", () => {
         context: {
           runId: retryRunId,
           rootRunId,
-          userId: 42,
-          role: "user",
+scope: {
+            workspaceId: 3,
+            ownerUserId: 42,
+            contactId: null,
+            channelId: null,
+          },
           currentUserMessage,
           authorization: deriveAgentWriteAuthorization(currentUserMessage),
         },
@@ -373,8 +391,12 @@ describe("agent tool validation and summaries", () => {
         context: {
           runId: retryRunId,
           rootRunId,
-          userId: 42,
-          role: "user",
+scope: {
+            workspaceId: 3,
+            ownerUserId: 42,
+            contactId: null,
+            channelId: null,
+          },
         },
       } as Parameters<NonNullable<typeof listTool>["invoke"]>[0],
       JSON.stringify({ limit: 5, offset: 0 })
@@ -416,8 +438,12 @@ describe("agent tool validation and summaries", () => {
         context: {
           runId,
           rootRunId,
-          userId: 42,
-          role: "user",
+scope: {
+            workspaceId: 3,
+            ownerUserId: 42,
+            contactId: null,
+            channelId: null,
+          },
         },
       } as Parameters<NonNullable<typeof searchTool>["invoke"]>[0],
       JSON.stringify({ query: "退款政策", limit: 3 })

@@ -46,7 +46,7 @@ const STATUS_META: Record<
 > = {
   pending: {
     label: "等待中",
-    className: "border-gray-200 bg-gray-100 text-gray-600",
+    className: "border-border bg-muted text-muted-foreground",
   },
   uploading: {
     label: "上传中",
@@ -58,7 +58,7 @@ const STATUS_META: Record<
   },
   parse_queued: {
     label: "等待解析",
-    className: "border-gray-200 bg-gray-100 text-gray-600",
+    className: "border-border bg-muted text-muted-foreground",
   },
   parsing: {
     label: "解析中",
@@ -82,7 +82,7 @@ const STATUS_META: Record<
   },
   cancelled: {
     label: "已取消",
-    className: "border-gray-200 bg-gray-100 text-gray-500",
+    className: "border-border bg-muted text-muted-foreground",
   },
 };
 
@@ -183,7 +183,7 @@ function SecurityCounts({
         </Badge>
       ) : null}
       {pending > 0 ? (
-        <Badge variant="outline" className="border-gray-200 bg-gray-50 text-gray-600">
+        <Badge variant="outline" className="border-border bg-muted/60 text-muted-foreground">
           待处理 {pending}
         </Badge>
       ) : null}
@@ -435,7 +435,7 @@ export default function KnowledgeDocuments() {
         <Button
           variant="ghost"
           size="icon-sm"
-          className="text-gray-500 hover:text-red-600"
+          className="text-muted-foreground hover:text-red-600"
           aria-label={`删除文档 ${doc.filename}`}
         >
           <Trash2 className="size-4" />
@@ -464,10 +464,10 @@ export default function KnowledgeDocuments() {
 
   return (
     <Card className="mb-6 gap-0">
-      <CardHeader className="flex flex-row items-center justify-between gap-4 border-b border-gray-100 pb-4">
+      <CardHeader className="flex flex-row items-center justify-between gap-4 border-b border-border pb-4">
         <div>
           <CardTitle className="text-sm">文档导入</CardTitle>
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-muted-foreground">
             上传 Markdown / CSV，自动解析为知识条目并构建向量索引
           </p>
         </div>
@@ -495,7 +495,7 @@ export default function KnowledgeDocuments() {
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">
+                <label className="text-sm font-medium text-muted-foreground">
                   文件
                 </label>
                 <Input
@@ -505,13 +505,13 @@ export default function KnowledgeDocuments() {
                   onChange={e => setFile(e.target.files?.[0] ?? null)}
                 />
                 {file ? (
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     {formatFileSize(file.size)}
                   </p>
                 ) : null}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">
+                <label className="text-sm font-medium text-muted-foreground">
                   分类（可选）
                 </label>
                 <Input
@@ -523,7 +523,7 @@ export default function KnowledgeDocuments() {
               {multipartUploading ? (
                 <div className="space-y-1.5" aria-live="polite">
                   <Progress value={uploadProgress} className="h-2" />
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     上传进度 {uploadProgress}%
                   </p>
                 </div>
@@ -556,10 +556,10 @@ export default function KnowledgeDocuments() {
             <Spinner />
           </div>
         ) : !documents || documents.length === 0 ? (
-          <p className="text-sm text-gray-500 py-4 text-center">暂无上传文档</p>
+          <p className="text-sm text-muted-foreground py-4 text-center">暂无上传文档</p>
         ) : (
           <>
-            <div className="divide-y divide-gray-100 md:hidden">
+            <div className="divide-y divide-border md:hidden">
               {documents.map(doc => {
                 const status = doc.status as KnowledgeDocumentStatus;
                 const meta = STATUS_META[status] ?? STATUS_META.pending;
@@ -572,7 +572,7 @@ export default function KnowledgeDocuments() {
                   <div key={doc.id} className="py-4 first:pt-0 last:pb-0">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-gray-900">
+                        <p className="truncate text-sm font-medium text-foreground">
                           {doc.filename}
                         </p>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -582,7 +582,7 @@ export default function KnowledgeDocuments() {
                           <Badge variant="outline" className={meta.className}>
                             {meta.label}
                           </Badge>
-                          <span className="text-xs text-gray-400">
+                          <span className="text-xs text-muted-foreground">
                             {formatDistanceToNow(new Date(doc.createdAt), {
                               locale: zhCN,
                               addSuffix: true,
@@ -603,7 +603,7 @@ export default function KnowledgeDocuments() {
                     {total > 0 ? (
                       <div className="mt-3 space-y-1.5">
                         <Progress value={pct} className="h-1.5" />
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-muted-foreground">
                           已索引 {embedded} / {total}
                           {failed > 0 ? `，失败 ${failed}` : ""}
                         </p>
@@ -664,13 +664,13 @@ export default function KnowledgeDocuments() {
                           {total > 0 ? (
                             <div className="space-y-1">
                               <Progress value={pct} className="h-2" />
-                              <p className="text-xs text-gray-500">
+                              <p className="text-xs text-muted-foreground">
                                 {embedded} / {total}
                                 {failed > 0 ? `（失败 ${failed}）` : ""}
                               </p>
                             </div>
                           ) : (
-                            <span className="text-xs text-gray-400">—</span>
+                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -681,7 +681,7 @@ export default function KnowledgeDocuments() {
                             pending={doc.pendingSecurityChunks ?? 0}
                           />
                         </TableCell>
-                        <TableCell className="text-xs text-gray-500">
+                        <TableCell className="text-xs text-muted-foreground">
                           {formatDistanceToNow(new Date(doc.createdAt), {
                             locale: zhCN,
                             addSuffix: true,

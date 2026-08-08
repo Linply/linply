@@ -1,13 +1,12 @@
 import * as db from "../db";
+import { consoleScope, requireWorkspaceForUser } from "../workspace";
+import type { ConversationScope } from "../workspace";
 
 export type McpUserContext = {
   id: number;
-  role: "user" | "admin";
-};
-
-const parseRole = (value: string | undefined): McpUserContext["role"] => {
-  if (value === "admin") return "admin";
-  return "user";
+  workspaceId: number;
+  /** The MCP server always acts as the workspace owner in their own console. */
+  scope: ConversationScope;
 };
 
 export async function getMcpUserContext(): Promise<McpUserContext> {
@@ -20,21 +19,16 @@ export async function getMcpUserContext(): Promise<McpUserContext> {
     );
   }
 
-  const role = parseRole(process.env.MCP_ROLE);
   const user = await db.getUserById(userId);
   if (!user) {
     throw new Error(`MCP_USER_ID ${userId} does not match an existing user`);
   }
 
-  if (role === "admin" && user.role !== "admin") {
-    throw new Error(
-      `MCP_ROLE=admin requires user ${userId} to have admin role in the database`
-    );
-  }
+  const workspace = await requireWorkspaceForUser(user);
 
   return {
     id: user.id,
-    role,
+    workspaceId: workspace.id,
+    scope: consoleScope(workspace),
   };
 }
-

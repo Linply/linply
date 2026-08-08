@@ -147,23 +147,30 @@ export async function loginWithPassword(input: {
   return toPublicUser({ ...account.user, lastSignedIn: new Date() });
 }
 
-export const isDemoAdminConfigured = () =>
-  Boolean(ENV.demoAdminEmail && ENV.demoAdminPassword);
+export const isDemoAccountConfigured = () =>
+  Boolean(ENV.demoAccountEmail && ENV.demoAccountPassword);
 
-export async function loginAsDemoAdmin(req: Request, res: Response) {
-  if (!isDemoAdminConfigured()) {
-    throw ForbiddenError("管理员演示入口未配置");
+/**
+ * One-click entry into a pre-seeded workspace. It is an ordinary account with
+ * no elevated rights — it just skips the sign-up form for people trying the
+ * product out.
+ */
+export async function loginAsDemoAccount(req: Request, res: Response) {
+  if (!isDemoAccountConfigured()) {
+    throw ForbiddenError("体验账号入口未配置");
   }
 
-  const account = await db.getPasswordAccountByEmail(normalizeEmail(ENV.demoAdminEmail));
-  if (!account || account.user.role !== "admin") {
-    throw ForbiddenError("管理员演示账号不可用");
+  const account = await db.getPasswordAccountByEmail(
+    normalizeEmail(ENV.demoAccountEmail)
+  );
+  if (!account) {
+    throw ForbiddenError("体验账号不可用");
   }
 
   return loginWithPassword(
     {
-      email: ENV.demoAdminEmail,
-      password: ENV.demoAdminPassword,
+      email: ENV.demoAccountEmail,
+      password: ENV.demoAccountPassword,
     },
     req,
     res
