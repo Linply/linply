@@ -30,7 +30,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
+import { useT } from "@/i18n";
 import KnowledgeDocuments from "@/components/KnowledgeDocuments";
 import { useLocation, useSearch } from "wouter";
 import { formatDistanceToNow } from "date-fns";
@@ -67,7 +68,7 @@ const SECURITY_STATUS_META: Record<
 > = {
   pending: {
     label: "待扫描",
-    className: "border-gray-200 bg-gray-50 text-gray-600",
+    className: "border-border bg-muted/60 text-muted-foreground",
   },
   approved: {
     label: "已批准",
@@ -136,6 +137,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
 
 export default function KnowledgeBase() {
   const { user } = useAuth({ redirectOnUnauthenticated: true });
+  const t = useT();
   const [, setLocation] = useLocation();
   const locationSearch = useSearch();
   const [search, setSearch] = useState("");
@@ -394,74 +396,47 @@ export default function KnowledgeBase() {
     return () => window.cancelAnimationFrame(frame);
   }, [entries, targetEntryId]);
 
-  if (user && user.role !== "admin") {
-    return (
-      <div className="min-h-screen bg-background pt-[5.75rem]">
-        <PageNav />
-        <main className="mx-auto max-w-4xl px-6 py-16 text-center">
-          <p className="text-sm font-medium text-gray-900">
-            知识库仅对管理员开放
-          </p>
+  return (
+    <AppShell
+      title={t.knowledge.title}
+      description={t.knowledge.subtitle}
+      maxWidth="wide"
+      actions={
+        <>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setLocation("/")}
-            className="mt-4"
+            onClick={() => setLocation("/rag-debug")}
           >
-            返回工作台
+            <Bug className="size-4" />
+            {t.knowledge.debugEntry}
           </Button>
-        </main>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-background pt-[5.75rem]">
-      <PageNav />
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
-        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm text-gray-500">Agent 数据源</p>
-            <h1 className="mt-1 text-2xl font-semibold text-gray-950">
-              知识库
-            </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              管理 AI 客服可检索和引用的知识内容
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setLocation("/admin/rag-debug")}
-            >
-              <Bug className="size-4" />
-              RAG 调试
-            </Button>
-            <Button size="sm" onClick={openCreateDialog}>
-              <Plus className="size-4" />
-              新增条目
-            </Button>
-          </div>
-        </header>
+          <Button size="sm" onClick={openCreateDialog}>
+            <Plus className="size-4" />
+            {t.knowledge.addEntry}
+          </Button>
+        </>
+      }
+    >
+      <div>
 
         <KnowledgeDocuments />
 
-        <section className="mb-4 flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2">
+        <section className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-card p-2">
           <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               aria-label="搜索知识库"
               placeholder="搜索标题、关键词或内容"
               value={search}
               onChange={event => setSearch(event.target.value)}
-              className="border-transparent bg-gray-50 pl-9 pr-9 focus-visible:bg-white"
+              className="border-transparent bg-muted/60 pl-9 pr-9 focus-visible:bg-card"
             />
             {search ? (
               <button
                 type="button"
                 onClick={() => setSearch("")}
-                className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+                className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="清空搜索"
                 title="清空搜索"
               >
@@ -469,7 +444,7 @@ export default function KnowledgeBase() {
               </button>
             ) : null}
           </div>
-          <div className="flex flex-wrap items-center gap-1 border-gray-100 sm:border-l sm:pl-2">
+          <div className="flex flex-wrap items-center gap-1 border-border sm:border-l sm:pl-2">
             {(Object.entries(SECURITY_STATUS_META) as Array<
               [KnowledgeSecurityStatus, (typeof SECURITY_STATUS_META)[KnowledgeSecurityStatus]]
             >).map(([status, meta]) => (
@@ -489,17 +464,17 @@ export default function KnowledgeBase() {
         </section>
 
         <div className="grid gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
-          <aside className="sticky top-[6.75rem] h-fit max-h-[calc(100vh-7.75rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-4">
+          <aside className="sticky top-[6.75rem] h-fit max-h-[calc(100vh-7.75rem)] overflow-y-auto rounded-lg border border-border bg-card p-4">
             <div className="mb-4 flex items-center gap-2">
-              <BookOpen className="size-4 text-gray-400" />
-              <h2 className="text-sm font-semibold text-gray-900">分类</h2>
+              <BookOpen className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold text-foreground">分类</h2>
             </div>
             {listLoading ? (
               <div className="flex justify-center py-6">
                 <Spinner className="size-5" />
               </div>
             ) : categoryCounts.length === 0 ? (
-              <p className="text-sm text-gray-500">暂无分类</p>
+              <p className="text-sm text-muted-foreground">暂无分类</p>
             ) : (
               <div className="space-y-1">
                 <button
@@ -508,12 +483,12 @@ export default function KnowledgeBase() {
                   onClick={() => setSelectedCategory(null)}
                   className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors ${
                     selectedCategory === null
-                      ? "bg-gray-100 font-medium text-gray-950"
-                      : "text-gray-600 hover:bg-gray-50"
+                      ? "bg-muted font-medium text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50"
                   }`}
                 >
                   <span>全部分类</span>
-                  <span className="tabular-nums text-xs text-gray-400">
+                  <span className="tabular-nums text-xs text-muted-foreground">
                     {entries?.length ?? 0}
                   </span>
                 </button>
@@ -529,12 +504,12 @@ export default function KnowledgeBase() {
                     }
                     className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors ${
                       selectedCategory === category
-                        ? "bg-gray-100 font-medium text-gray-950"
-                        : "text-gray-700 hover:bg-gray-50"
+                        ? "bg-muted font-medium text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50"
                     }`}
                   >
                     <span className="min-w-0 truncate">{category}</span>
-                    <span className="tabular-nums text-xs text-gray-400">
+                    <span className="tabular-nums text-xs text-muted-foreground">
                       {count}
                     </span>
                   </button>
@@ -545,7 +520,7 @@ export default function KnowledgeBase() {
 
           <section className="min-w-0">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 {selectedCategory ? `分类：${selectedCategory} · ` : ""}
                 {query
                   ? `搜索结果：${visibleEntries?.length ?? 0} 条`
@@ -554,13 +529,13 @@ export default function KnowledgeBase() {
             </div>
 
             {isLoading ? (
-              <div className="flex h-64 items-center justify-center rounded-lg border border-gray-200 bg-white">
+              <div className="flex h-64 items-center justify-center rounded-lg border border-border bg-card">
                 <Spinner className="size-5" />
               </div>
             ) : !visibleEntries || visibleEntries.length === 0 ? (
-              <div className="rounded-lg border border-gray-200 bg-white px-6 py-14 text-center">
-                <BookOpen className="mx-auto size-5 text-gray-300" />
-                <p className="mt-2 text-sm text-gray-500">
+              <div className="rounded-lg border border-border bg-card px-6 py-14 text-center">
+                <BookOpen className="mx-auto size-5 text-muted-foreground/60" />
+                <p className="mt-2 text-sm text-muted-foreground">
                   {selectedCategory
                     ? "当前分类下暂无匹配条目"
                     : "暂无知识库条目"}
@@ -577,7 +552,7 @@ export default function KnowledgeBase() {
                 )}
               </div>
             ) : (
-              <div className="divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-200 bg-white">
+              <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
                 {visibleEntries.map(entry => (
                   <article
                     key={entry.id}
@@ -586,18 +561,18 @@ export default function KnowledgeBase() {
                     className={`scroll-mt-28 p-4 outline-none transition-[background-color,box-shadow] duration-500 sm:p-5 ${
                       targetEntryId === entry.id
                         ? "bg-blue-50/60 ring-1 ring-inset ring-blue-200"
-                        : "bg-white"
+                        : "bg-card"
                     }`}
                   >
                     <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_9rem]">
                       <div className="min-w-0 break-words">
                         <div className="mb-2 flex flex-wrap items-center gap-2">
-                          <h3 className="text-sm font-semibold text-gray-950">
+                          <h3 className="text-sm font-semibold text-foreground">
                             <HighlightedText text={entry.title} query={query} />
                           </h3>
                           <Badge
                             variant="outline"
-                            className="bg-gray-50 text-gray-600"
+                            className="bg-muted/60 text-muted-foreground"
                           >
                             <HighlightedText
                               text={getDisplayCategory(entry)}
@@ -629,7 +604,7 @@ export default function KnowledgeBase() {
                             </Badge>
                           )}
                         </div>
-                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-700">
+                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground">
                           <HighlightedText text={entry.content} query={query} />
                         </p>
                         {entry.conflictWith != null && (
@@ -670,7 +645,7 @@ export default function KnowledgeBase() {
                             </ul>
                           </div>
                         )}
-                        <dl className="mt-3 grid gap-x-4 gap-y-1 text-xs text-gray-500 sm:grid-cols-2">
+                        <dl className="mt-3 grid gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
                           <div className="flex gap-1">
                             <dt>扫描器：</dt>
                             <dd className="break-all font-mono">{entry.securityScannerVersion}</dd>
@@ -685,12 +660,12 @@ export default function KnowledgeBase() {
                           </div>
                         </dl>
                         {entry.securityReviewReason ? (
-                          <p className="mt-2 text-xs text-gray-500">
+                          <p className="mt-2 text-xs text-muted-foreground">
                             审核理由：{entry.securityReviewReason}
                           </p>
                         ) : null}
                         {entry.keywords && (
-                          <p className="mt-3 text-xs text-gray-500">
+                          <p className="mt-3 text-xs text-muted-foreground">
                             关键词：
                             <HighlightedText
                               text={entry.keywords}
@@ -700,7 +675,7 @@ export default function KnowledgeBase() {
                         )}
                       </div>
                       <div className="flex items-start justify-between gap-3 md:flex-col md:items-end">
-                        <div className="shrink-0 text-xs text-gray-400 md:text-right">
+                        <div className="shrink-0 text-xs text-muted-foreground md:text-right">
                           <p>
                             {formatDistanceToNow(new Date(entry.updatedAt), {
                               locale: zhCN,
@@ -795,7 +770,7 @@ export default function KnowledgeBase() {
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
-                                className="text-gray-400 hover:text-red-600"
+                                className="text-muted-foreground hover:text-red-600"
                                 aria-label="删除条目"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -828,7 +803,7 @@ export default function KnowledgeBase() {
             )}
           </section>
         </div>
-      </main>
+      </div>
 
       <Dialog
         open={Boolean(reviewEntry)}
@@ -849,9 +824,9 @@ export default function KnowledgeBase() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <p className="text-sm font-medium text-gray-900">{reviewEntry?.title}</p>
+            <p className="text-sm font-medium text-foreground">{reviewEntry?.title}</p>
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">
+              <label className="mb-2 block text-sm font-medium text-muted-foreground">
                 审核理由
               </label>
               <Textarea
@@ -862,7 +837,7 @@ export default function KnowledgeBase() {
                 onChange={event => setReviewReason(event.target.value)}
               />
             </div>
-            <p className="break-all font-mono text-[11px] text-gray-400">
+            <p className="break-all font-mono text-[11px] text-muted-foreground">
               Hash: {reviewEntry?.securityContentHash ?? "未生成"}
             </p>
           </div>
@@ -901,7 +876,7 @@ export default function KnowledgeBase() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">
+              <label className="mb-2 block text-sm font-medium text-muted-foreground">
                 标题
               </label>
               <Input
@@ -912,7 +887,7 @@ export default function KnowledgeBase() {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">
+              <label className="mb-2 block text-sm font-medium text-muted-foreground">
                 分类
               </label>
               <Input
@@ -923,7 +898,7 @@ export default function KnowledgeBase() {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">
+              <label className="mb-2 block text-sm font-medium text-muted-foreground">
                 关键词
               </label>
               <Input
@@ -934,7 +909,7 @@ export default function KnowledgeBase() {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">
+              <label className="mb-2 block text-sm font-medium text-muted-foreground">
                 内容
               </label>
               <Textarea
@@ -963,6 +938,6 @@ export default function KnowledgeBase() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AppShell>
   );
 }

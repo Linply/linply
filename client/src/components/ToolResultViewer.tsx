@@ -6,7 +6,7 @@ type ToolResultViewerProps = {
 
 export default function ToolResultViewer({ value }: ToolResultViewerProps) {
   return (
-    <pre className="max-h-56 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+    <pre className="max-h-56 overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs leading-5 text-muted-foreground">
       {formatJsonSummary(value) || "暂无结果"}
     </pre>
   );

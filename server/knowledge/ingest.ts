@@ -31,6 +31,7 @@ function parseFile(
 }
 
 async function detectKeywordConflicts(
+  workspaceId: number,
   documentId: number,
   entries: Array<{ id: number; title: string }>
 ) {
@@ -38,6 +39,7 @@ async function detectKeywordConflicts(
     try {
       const conflict = await db.detectEntryConflict({
         id: entry.id,
+        workspaceId,
         title: entry.title,
         documentId,
         embedding: null,
@@ -104,6 +106,7 @@ export async function processKnowledgeEmbeddingBatch(
       try {
         const conflict = await db.detectEntryConflict({
           id: entry.id,
+          workspaceId: entry.workspaceId,
           title: entry.title,
           documentId,
           embedding,
@@ -186,6 +189,7 @@ export async function processStoredKnowledgeDocument(
       };
     });
     const inserted = await db.addKnowledgeEntriesBatch(
+      document.workspaceId,
       documentId,
       scannedBatch,
       embeddingEnabled ? "pending" : "completed"
@@ -212,7 +216,7 @@ export async function processStoredKnowledgeDocument(
         entryIds: approved.map(entry => entry.id),
       });
     } else if (!embeddingEnabled) {
-      await detectKeywordConflicts(documentId, approved);
+      await detectKeywordConflicts(document.workspaceId, documentId, approved);
     }
   };
 
@@ -261,6 +265,7 @@ export async function processStoredKnowledgeDocument(
 
 /** Legacy JSON upload path retained for local environments without object storage. */
 export async function ingestDocument(params: {
+  workspaceId: number;
   filename: string;
   fileType: KnowledgeFileType;
   content: string;
@@ -275,6 +280,7 @@ export async function ingestDocument(params: {
   const requestedCategory = params.category?.trim();
   const category = requestedCategory || "未分类";
   const doc = await db.createKnowledgeDocument({
+    workspaceId: params.workspaceId,
     filename: params.filename,
     fileType: params.fileType,
     uploadedBy: params.userId,
@@ -332,6 +338,7 @@ export async function ingestDocument(params: {
     };
   });
   const inserted = await db.addKnowledgeEntriesBatch(
+    params.workspaceId,
     doc.id,
     scannedEntries,
     embeddingEnabled ? "pending" : "completed"
@@ -360,7 +367,7 @@ export async function ingestDocument(params: {
       );
     });
   } else {
-    await detectKeywordConflicts(doc.id, approved);
+    await detectKeywordConflicts(params.workspaceId, doc.id, approved);
   }
   return {
     documentId: doc.id,

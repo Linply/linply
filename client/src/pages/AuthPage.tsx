@@ -3,21 +3,12 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import BrandMark from "@/components/BrandMark";
+import LanguageToggle from "@/components/LanguageToggle";
+import { useT, type Dictionary } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
-import {
-  AlertCircle,
-  ArrowLeft,
-  Bot,
-  Eye,
-  EyeOff,
-  Loader2,
-  LockKeyhole,
-  LogIn,
-  Mail,
-  ShieldCheck,
-  TicketCheck,
-  UserRound,
-} from "lucide-react";
+import { AlertCircle, Bot, Eye, EyeOff, Loader2 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -37,13 +28,12 @@ const getReturnTo = () => {
   }
 };
 
-const getOAuthError = () => {
+const getOAuthError = (t: Dictionary) => {
   const code = new URLSearchParams(window.location.search).get("oauthError");
-  if (code === "oauth_denied") return "已取消 Google 登录";
-  if (code === "invalid_state") return "登录请求已失效，请重新尝试";
-  if (code === "account_link_required")
-    return "该邮箱已注册，请先使用邮箱密码登录";
-  if (code === "oauth_failed") return "Google 登录失败，请稍后重试";
+  if (code === "oauth_denied") return t.auth.oauthDenied;
+  if (code === "invalid_state") return t.auth.oauthInvalidState;
+  if (code === "account_link_required") return t.auth.oauthLinkRequired;
+  if (code === "oauth_failed") return t.auth.oauthFailed;
   return null;
 };
 
@@ -54,8 +44,105 @@ const getAuthPageUrl = (path: "/login" | "/register") => {
     : `${path}?returnTo=${encodeURIComponent(returnTo)}`;
 };
 
+/**
+ * Backdrop motif: one source radiating outward to many endpoints — the product's
+ * whole story, since a workspace's knowledge is answering across every channel
+ * it is connected to. Rings carry the "reach" idea, nodes are the endpoints.
+ *
+ * Pure SVG at very low contrast so the headline stays dominant; no animation, so
+ * it costs nothing and respects reduced-motion by construction.
+ */
+const RING_RADII = [78, 132, 196, 268, 348, 436, 532];
+
+/** Endpoints sit at hand-picked angles so they read as scattered, not clock-like. */
+const NODES: Array<{ angle: number; radius: number; size: number }> = [
+  { angle: -62, radius: 132, size: 4 },
+  { angle: 24, radius: 196, size: 5 },
+  { angle: 158, radius: 196, size: 3.5 },
+  { angle: -142, radius: 268, size: 4.5 },
+  { angle: 74, radius: 268, size: 3 },
+  { angle: -18, radius: 348, size: 5.5 },
+  { angle: 196, radius: 348, size: 4 },
+  { angle: 112, radius: 436, size: 4.5 },
+  { angle: -105, radius: 436, size: 3.5 },
+  { angle: 42, radius: 532, size: 4 },
+  { angle: 214, radius: 532, size: 3 },
+];
+
+const polar = (angle: number, radius: number) => {
+  const radians = (angle * Math.PI) / 180;
+  return { x: 600 + Math.cos(radians) * radius, y: 600 + Math.sin(radians) * radius };
+};
+
+function SignalBackdrop() {
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+      {/* Warm indigo wash so the panel is not flat white. */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_45%,var(--primary-soft),transparent_62%)] opacity-70" />
+
+      <svg
+        viewBox="0 0 1200 1200"
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute inset-0 size-full [mask-image:radial-gradient(ellipse_at_50%_45%,black_38%,transparent_82%)]"
+      >
+        {RING_RADII.map((radius, index) => (
+          <circle
+            key={radius}
+            cx="600"
+            cy="600"
+            r={radius}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={index < 2 ? 1.4 : 1}
+            // Outer rings dashed and fainter, so reach reads as diminishing.
+            strokeDasharray={index > 2 ? "3 9" : undefined}
+            className="text-primary"
+            opacity={0.3 - index * 0.032}
+          />
+        ))}
+
+        {NODES.map(node => {
+          const point = polar(node.angle, node.radius);
+          return (
+            <g key={`${node.angle}-${node.radius}`}>
+              <line
+                x1="600"
+                y1="600"
+                x2={point.x}
+                y2={point.y}
+                stroke="currentColor"
+                strokeWidth="1"
+                className="text-primary"
+                opacity="0.07"
+              />
+              <circle
+                cx={point.x}
+                cy={point.y}
+                r={node.size}
+                fill="currentColor"
+                className="text-primary"
+                opacity="0.22"
+              />
+            </g>
+          );
+        })}
+
+        <circle
+          cx="600"
+          cy="600"
+          r="10"
+          fill="currentColor"
+          className="text-primary"
+          opacity="0.4"
+        />
+      </svg>
+    </div>
+  );
+}
+
 export default function AuthPage({ mode }: AuthPageProps) {
   const isRegister = mode === "register";
+  const t = useT();
   const { user, loading } = useAuth();
   const utils = trpc.useUtils();
   const [, setLocation] = useLocation();
@@ -81,7 +168,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: finishAuthentication,
   });
-  const demoAdminLoginMutation = trpc.auth.demoAdminLogin.useMutation({
+  const demoLoginMutation = trpc.auth.demoLogin.useMutation({
     onSuccess: finishAuthentication,
   });
   const registerMutation = trpc.auth.register.useMutation({
@@ -94,27 +181,22 @@ export default function AuthPage({ mode }: AuthPageProps) {
 
   const pending =
     loginMutation.isPending ||
-    demoAdminLoginMutation.isPending ||
+    demoLoginMutation.isPending ||
     registerMutation.isPending;
   const requestError =
     loginMutation.error?.message ??
-    demoAdminLoginMutation.error?.message ??
+    demoLoginMutation.error?.message ??
     registerMutation.error?.message;
-  const oauthError = getOAuthError();
+  const oauthError = getOAuthError(t);
   const returnTo = getReturnTo();
   const googleOAuthUrl = `/api/auth/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`;
-
-  const handleDemoAdminLogin = () => {
-    setFormError(null);
-    demoAdminLoginMutation.mutate();
-  };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError(null);
 
     if (isRegister && password !== confirmPassword) {
-      setFormError("两次输入的密码不一致");
+      setFormError(t.auth.passwordMismatch);
       return;
     }
 
@@ -126,270 +208,256 @@ export default function AuthPage({ mode }: AuthPageProps) {
   };
 
   return (
-    <main className="relative flex min-h-screen flex-col bg-background px-4 py-6 sm:px-6">
-      <header className="mx-auto flex w-full max-w-6xl items-center gap-2 text-sm font-semibold text-gray-950">
-        <span className="relative flex size-8 items-center justify-center rounded-lg bg-gray-950 text-white">
-          <Bot className="size-4" />
-          <span className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500" />
-        </span>
-        客服工单 Agent
-      </header>
+    <main className="flex min-h-screen bg-background">
+      <section className="relative hidden flex-1 items-center justify-center overflow-hidden border-r border-border lg:flex">
+        <SignalBackdrop />
+        <div className="absolute left-8 top-7 flex items-center gap-2">
+          <BrandMark />
+          <span className="text-base font-semibold text-foreground">Linply</span>
+        </div>
+        <div className="relative px-12 text-center">
+          <h1 className="text-5xl font-bold leading-tight tracking-tight text-foreground">
+            {t.auth.heroLine1}
+            <br />
+            {t.auth.heroLine2}
+          </h1>
+          <p className="mx-auto mt-6 max-w-md text-sm leading-6 text-muted-foreground">
+            {t.auth.heroSubtitle}
+          </p>
+        </div>
+      </section>
 
-      <div className="mx-auto grid w-full max-w-5xl flex-1 items-center gap-10 py-10 sm:py-14 lg:grid-cols-[26rem_minmax(0,1fr)] lg:gap-16">
-        <section className="w-full">
-          <div className="mb-6">
-            <h1 className="mt-1 text-2xl font-semibold text-gray-950">
-              {isRegister ? "创建账号" : "登录账号"}
-            </h1>
-            <p className="mt-2 text-sm leading-6 text-gray-500">
-              {isRegister
-                ? "使用邮箱创建你的客服账号"
-                : "使用注册邮箱继续访问系统"}
-            </p>
+      <section className="flex w-full flex-col lg:w-[26rem] xl:w-[30rem]">
+        <div className="flex items-center justify-between gap-2 p-5">
+          <div className="flex items-center gap-2 lg:invisible">
+            <BrandMark />
+            <span className="text-sm font-semibold text-foreground">Linply</span>
           </div>
+          <div className="flex items-center gap-2">
+          <div
+            role="tablist"
+            className="flex rounded-lg border border-border bg-muted/60 p-0.5 text-sm"
+          >
+            {(
+              [
+                {
+                  label: t.auth.tabLogin,
+                  path: "/login" as const,
+                  active: !isRegister,
+                },
+                {
+                  label: t.auth.tabRegister,
+                  path: "/register" as const,
+                  active: isRegister,
+                },
+              ]
+            ).map(tab => (
+              <button
+                key={tab.path}
+                type="button"
+                role="tab"
+                aria-selected={tab.active}
+                // Distinct from the submit button, which shares the visible label.
+                aria-label={t.auth.switchTo(tab.label)}
+                onClick={() => setLocation(getAuthPageUrl(tab.path))}
+                className={cn(
+                  "rounded-md px-3.5 py-1 transition-colors",
+                  tab.active
+                    ? "bg-card font-medium text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+            </div>
+            <LanguageToggle />
+          </div>
+        </div>
 
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <div className="p-5 sm:p-6">
-              {providersQuery.data?.google ? (
-                <>
-                  <Button
-                    asChild
-                    variant="outline"
-                    className="w-full"
-                    size="default"
-                  >
-                    <a href={googleOAuthUrl}>
-                      <LogIn className="size-4" />
-                      使用 Google 登录
-                    </a>
-                  </Button>
-                  <div className="my-5 flex items-center gap-3 text-xs text-gray-400">
-                    <div className="h-px flex-1 bg-gray-200" />
-                    <span>或使用邮箱</span>
-                    <div className="h-px flex-1 bg-gray-200" />
-                  </div>
-                </>
+        <div className="flex flex-1 items-center justify-center px-6 pb-10">
+          <div className="w-full max-w-[21rem]">
+            <h2 className="text-center text-xl font-semibold text-foreground">
+              {isRegister ? t.auth.registerTitle : t.auth.loginTitle}
+            </h2>
+
+            {oauthError ? (
+              <Alert variant="destructive" className="mt-6">
+                <AlertCircle />
+                <AlertDescription>{oauthError}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+              {isRegister ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="name">{t.auth.name}</Label>
+                  <Input
+                    id="name"
+                    value={name}
+                    onChange={event => setName(event.target.value)}
+                    autoComplete="name"
+                    maxLength={80}
+                    placeholder={t.auth.namePlaceholder}
+                    required
+                  />
+                </div>
               ) : null}
 
-              {oauthError ? (
-                <Alert variant="destructive" className="mb-5">
+              <div className="space-y-1.5">
+                <Label htmlFor="email">{t.auth.email}</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={event => setEmail(event.target.value)}
+                  autoComplete="email"
+                  maxLength={320}
+                  placeholder="name@example.com"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="password">{t.auth.password}</Label>
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={event => setPassword(event.target.value)}
+                    autoComplete={
+                      isRegister ? "new-password" : "current-password"
+                    }
+                    className="pr-9"
+                    minLength={isRegister ? 8 : 1}
+                    maxLength={128}
+                    placeholder={isRegister ? t.auth.passwordHint : t.auth.passwordPlaceholder}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(value => !value)}
+                    className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                    aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="size-4" />
+                    ) : (
+                      <Eye className="size-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {isRegister ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="confirm-password">{t.auth.confirmPassword}</Label>
+                  <Input
+                    id="confirm-password"
+                    type={showPassword ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={event => setConfirmPassword(event.target.value)}
+                    autoComplete="new-password"
+                    minLength={8}
+                    maxLength={128}
+                    placeholder={t.auth.confirmPasswordPlaceholder}
+                    required
+                  />
+                </div>
+              ) : null}
+
+              {formError || requestError ? (
+                <Alert variant="destructive">
                   <AlertCircle />
-                  <AlertDescription>{oauthError}</AlertDescription>
+                  <AlertDescription>
+                    {formError ?? requestError}
+                  </AlertDescription>
                 </Alert>
               ) : null}
 
-              <form className="space-y-4" onSubmit={handleSubmit}>
-                {isRegister ? (
-                  <div className="space-y-2">
-                    <Label htmlFor="name">姓名</Label>
-                    <div className="relative">
-                      <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" />
-                      <Input
-                        id="name"
-                        value={name}
-                        onChange={event => setName(event.target.value)}
-                        autoComplete="name"
-                        className="pl-9"
-                        maxLength={80}
-                        placeholder="姓名"
-                        required
-                      />
-                    </div>
-                  </div>
-                ) : null}
+              <Button type="submit" className="w-full" disabled={pending}>
+                {pending ? <Loader2 className="animate-spin" /> : null}
+                {isRegister ? t.auth.signUp : t.auth.signIn}
+              </Button>
+            </form>
 
-                <div className="space-y-2">
-                  <Label htmlFor="email">邮箱</Label>
-                  <div className="relative">
-                    <Mail className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" />
-                    <Input
-                      id="email"
-                      type="email"
-                      value={email}
-                      onChange={event => setEmail(event.target.value)}
-                      autoComplete="email"
-                      className="pl-9"
-                      maxLength={320}
-                      placeholder={isRegister ? "name@example.com" : undefined}
-                      required
-                    />
-                  </div>
+            <p className="mt-3 text-center text-sm text-muted-foreground">
+              {isRegister ? t.auth.haveAccount : t.auth.noAccount}
+              <button
+                type="button"
+                className="ml-1 font-medium text-foreground hover:underline"
+                onClick={() =>
+                  setLocation(getAuthPageUrl(isRegister ? "/login" : "/register"))
+                }
+              >
+                {isRegister ? t.auth.signIn : t.auth.signUp}
+              </button>
+            </p>
+
+            {providersQuery.data?.google ||
+            (!isRegister && providersQuery.data?.demoAccount) ? (
+              <>
+                <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className="h-px flex-1 bg-border" />
+                  <span>{t.auth.orContinueWith}</span>
+                  <span className="h-px flex-1 bg-border" />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="password">密码</Label>
-                  <div className="relative">
-                    <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" />
-                    <Input
-                      id="password"
-                      type={showPassword ? "text" : "password"}
-                      value={password}
-                      onChange={event => setPassword(event.target.value)}
-                      autoComplete={
-                        isRegister ? "new-password" : "current-password"
-                      }
-                      className="px-9"
-                      minLength={isRegister ? 8 : 1}
-                      maxLength={128}
-                      placeholder={isRegister ? "输入密码" : undefined}
-                      required
-                    />
-                    <button
+                  {providersQuery.data?.google ? (
+                    <Button asChild variant="outline" className="w-full">
+                      <a href={googleOAuthUrl}>
+                        <svg
+                          className="size-4"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                          <path
+                            fill="#4285F4"
+                            d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24Z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7H1.4a12 12 0 0 0 0 10.8l4-3.1Z"
+                          />
+                          <path
+                            fill="#EA4335"
+                            d="M12 4.8c1.8 0 3.4.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8Z"
+                          />
+                        </svg>
+                        Google
+                      </a>
+                    </Button>
+                  ) : null}
+
+                  {!isRegister && providersQuery.data?.demoAccount ? (
+                    <Button
                       type="button"
-                      onClick={() => setShowPassword(value => !value)}
-                      className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                      title={showPassword ? "隐藏密码" : "显示密码"}
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => {
+                        setFormError(null);
+                        demoLoginMutation.mutate();
+                      }}
+                      disabled={pending}
                     >
-                      {showPassword ? (
-                        <EyeOff className="size-4" />
-                      ) : (
-                        <Eye className="size-4" />
-                      )}
-                    </button>
-                  </div>
-                  {isRegister ? (
-                    <p className="text-xs text-gray-500">至少 8 个字符</p>
+                      {demoLoginMutation.isPending ? (
+                        <Loader2 className="animate-spin" />
+                      ) : null}
+                      {t.auth.demoAccount}
+                    </Button>
                   ) : null}
                 </div>
-
-                {isRegister ? (
-                  <div className="space-y-2">
-                    <Label htmlFor="confirm-password">确认密码</Label>
-                    <Input
-                      id="confirm-password"
-                      type={showPassword ? "text" : "password"}
-                      value={confirmPassword}
-                      onChange={event => setConfirmPassword(event.target.value)}
-                      autoComplete="new-password"
-                      minLength={8}
-                      maxLength={128}
-                      placeholder="再次输入密码"
-                      required
-                    />
-                  </div>
-                ) : null}
-
-                {formError || requestError ? (
-                  <Alert variant="destructive">
-                    <AlertCircle />
-                    <AlertDescription>
-                      {formError ?? requestError}
-                    </AlertDescription>
-                  </Alert>
-                ) : null}
-
-                <Button
-                  type="submit"
-                  className="w-full"
-                  size="default"
-                  disabled={pending}
-                >
-                  {pending ? <Loader2 className="animate-spin" /> : null}
-                  {isRegister ? "注册" : "登录"}
-                </Button>
-              </form>
-            </div>
-
-            {!isRegister && providersQuery.data?.demoAdmin ? (
-              <div className="border-t border-gray-100 bg-gray-50 px-5 py-4 sm:px-6">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full bg-white"
-                  size="default"
-                  onClick={handleDemoAdminLogin}
-                  disabled={pending}
-                >
-                  {demoAdminLoginMutation.isPending ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <ShieldCheck />
-                  )}
-                  一键进入管理员演示
-                </Button>
-                <p className="mt-3 text-center text-xs leading-5 text-gray-500">
-                  使用已配置的演示管理员账号，无需填写邮箱和密码
-                </p>
-              </div>
+              </>
             ) : null}
           </div>
-
-          <div className="mt-5 text-center text-sm text-gray-500">
-            {isRegister ? "已有账号？" : "还没有账号？"}
-            <button
-              type="button"
-              className="ml-1 font-medium text-gray-950 hover:underline"
-              onClick={() =>
-                setLocation(getAuthPageUrl(isRegister ? "/login" : "/register"))
-              }
-            >
-              {isRegister ? "直接登录" : "立即注册"}
-            </button>
-          </div>
-        </section>
-
-        <aside className="border-t border-gray-200 pt-8 lg:border-l lg:border-t-0 lg:pl-12 lg:pt-0">
-          <h2 className="mt-3 text-3xl font-semibold text-gray-950">
-            客服工单Agent
-          </h2>
-          <p className="mt-4 text-sm leading-6 text-gray-600">
-            从 AI
-            问答、知识检索到工单闭环，集中体验一套可追踪、可维护的智能客服工作台。
-          </p>
-          <p className="mt-7 border-t border-gray-200 pt-6 text-sm font-semibold text-gray-950">
-            建议体验路径
-          </p>
-          <div className="mt-6 space-y-6">
-            <div className="flex gap-4">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-700">
-                <ShieldCheck className="size-4" />
-              </span>
-              <div>
-                <h3 className="text-sm font-medium text-gray-900">
-                  先查看管理员工作台
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-gray-500">
-                  浏览知识库、工单和 RAG
-                  调试入口，了解后台如何维护客服资料。
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700">
-                <Bot className="size-4" />
-              </span>
-              <div>
-                <h3 className="text-sm font-medium text-gray-900">
-                  和智能客服对话
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-gray-500">
-                  输入产品或售后问题，查看知识库引用、回答依据和 Agent
-                  的执行过程。
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-700">
-                <TicketCheck className="size-4" />
-              </span>
-              <div>
-                <h3 className="text-sm font-medium text-gray-900">
-                  回到工单完成闭环
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-gray-500">
-                  创建工单、推进处理状态、补充备注，并在 Agent Run
-                  中排查每次运行结果。
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="mt-8 flex items-center gap-2 text-sm text-gray-500">
-            <ArrowLeft className="ml-1 size-4" />
-            <span>登录后可直接使用内置示例数据体验完整流程</span>
-          </div>
-        </aside>
-      </div>
+        </div>
+      </section>
     </main>
   );
 }

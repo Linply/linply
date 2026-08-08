@@ -1,172 +1,188 @@
-import { useEffect, useRef, useState } from "react";
-import type { TokenQuotaSnapshot } from "@shared/types";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useIntlLocale, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
+import { trpc } from "@/lib/trpc";
+import type { TokenQuotaSnapshot } from "@shared/types";
+import { Coins } from "lucide-react";
 
 const TOKENS_PER_CREDIT = 1_000;
 
 const creditsFromTokens = (tokens: number) => tokens / TOKENS_PER_CREDIT;
 
 const formatCredits = (tokens: number) =>
-  new Intl.NumberFormat("zh-CN", {
+  new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
+    maximumFractionDigits: tokens < TOKENS_PER_CREDIT ? 2 : 1,
   }).format(creditsFromTokens(tokens));
 
 const getUsedPercent = (quota: TokenQuotaSnapshot) => {
   if (quota.quotaLimitTokens <= 0) return 0;
   return Math.min(
     100,
-    Math.max(0, (quota.usedTokens / quota.quotaLimitTokens) * 100)
+    Math.max(
+      0,
+      ((quota.usedTokens + quota.reservedTokens) / quota.quotaLimitTokens) * 100
+    )
   );
 };
 
-const getRingColor = (usedPercent: number, hasError: boolean) => {
-  if (hasError || usedPercent >= 90) return "#dc2626";
-  if (usedPercent >= 70) return "#d97706";
-  return "#30363d";
+/** Green until two thirds spent, amber past that, red when nearly exhausted. */
+const getToneClasses = (usedPercent: number, hasError: boolean) => {
+  if (hasError || usedPercent >= 90) {
+    return { stroke: "stroke-destructive", text: "text-destructive" };
+  }
+  if (usedPercent >= 66) {
+    return { stroke: "stroke-warning", text: "text-warning" };
+  }
+  return { stroke: "stroke-primary", text: "text-foreground" };
 };
 
-type CreditQuotaIndicatorProps = {
-  quota: TokenQuotaSnapshot;
+function CreditRing({
+  usedPercent,
+  className,
+}: {
+  usedPercent: number;
+  className?: string;
+}) {
+  return (
+    <svg viewBox="0 0 40 40" className={cn("-rotate-90", className)} aria-hidden="true">
+      <circle
+        cx="20"
+        cy="20"
+        r="16"
+        fill="none"
+        className="stroke-border"
+        strokeWidth="5"
+      />
+      {usedPercent > 0 ? (
+        <circle
+          cx="20"
+          cy="20"
+          r="16"
+          pathLength="100"
+          fill="none"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeDasharray="100"
+          strokeDashoffset={100 - usedPercent}
+          className="transition-[stroke-dashoffset] duration-500"
+        />
+      ) : null}
+    </svg>
+  );
+}
+
+export type CreditQuotaIndicatorProps = {
+  /** Falls back to the shared query when the caller has no fresher snapshot. */
+  quota?: TokenQuotaSnapshot | null;
   error?: string | null;
+  className?: string;
 };
 
 export default function CreditQuotaIndicator({
-  quota,
+  quota: quotaOverride,
   error,
+  className,
 }: CreditQuotaIndicatorProps) {
-  const [open, setOpen] = useState(false);
-  const detailsRef = useRef<HTMLDivElement>(null);
+  const t = useT();
+  const intlLocale = useIntlLocale();
+  const quotaQuery = trpc.agentRuns.getTokenQuota.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+  const quota = quotaOverride ?? quotaQuery.data ?? null;
+
+  if (!quota) return null;
+
   const usedPercent = getUsedPercent(quota);
-  const ringColor = getRingColor(usedPercent, Boolean(error));
+  const tone = getToneClasses(usedPercent, Boolean(error));
   const isUnlimited = quota.quotaLimitTokens === 0;
   const remainingTokens = quota.remainingTokens ?? 0;
-  const balanceLabel = isUnlimited
-    ? "Credit 不限额"
-    : `剩余 ${formatCredits(remainingTokens)} Credit`;
-
-  useEffect(() => {
-    if (!open) return;
-
-    const closeOnOutsideInteraction = (event: PointerEvent | FocusEvent) => {
-      const target = event.target;
-      if (target instanceof Node && !detailsRef.current?.contains(target)) {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", closeOnOutsideInteraction);
-    document.addEventListener("focusin", closeOnOutsideInteraction);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideInteraction);
-      document.removeEventListener("focusin", closeOnOutsideInteraction);
-    };
-  }, [open]);
 
   return (
-    <Collapsible
-      ref={detailsRef}
-      open={open}
-      onOpenChange={setOpen}
-      className="absolute bottom-3 right-14 size-10"
-    >
-      <CollapsibleTrigger asChild>
-        <Button
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
           type="button"
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 rounded-full p-0 hover:bg-transparent data-[state=open]:bg-transparent"
-          aria-label={`${balanceLabel}，点击${open ? "收起" : "查看"}用量详情`}
-          title={`${balanceLabel}，点击查看详情`}
+          className={cn(
+            "flex h-8 items-center gap-2 rounded-full border border-border bg-card pl-1.5 pr-3 text-xs transition-colors hover:bg-accent/60",
+            className
+          )}
+          aria-label={t.credits.view}
         >
-          <span className="relative h-10 w-10">
-            <svg
-              className="absolute bottom-0 left-1.5 size-7 -rotate-90"
-              viewBox="0 0 40 40"
-              aria-hidden="true"
-            >
-              <circle
-                cx="20"
-                cy="20"
-                r="16"
-                fill="none"
-                stroke="#cfd4da"
-                strokeWidth="2.5"
-              />
-              {usedPercent > 0 ? (
-                <circle
-                  cx="20"
-                  cy="20"
-                  r="16"
-                  pathLength="100"
-                  fill="none"
-                  stroke={ringColor}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeDasharray="100"
-                  strokeDashoffset={100 - usedPercent}
-                  className="transition-[stroke-dashoffset,stroke] duration-300"
-                />
-              ) : null}
-            </svg>
+          <span className="relative flex size-5 items-center justify-center">
+            <CreditRing usedPercent={usedPercent} className={cn("size-5", tone.stroke)} />
+            <Coins className="absolute size-2.5 text-muted-foreground" />
           </span>
-        </Button>
-      </CollapsibleTrigger>
-
-      <CollapsibleContent className="absolute bottom-12 right-0 z-20 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-gray-200 bg-white p-4 text-xs text-gray-600 shadow-lg">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-gray-900">Credit 用量</h2>
-          {!quota.enforced || isUnlimited ? (
-            <Badge variant="outline">观测模式</Badge>
+          <span className={cn("font-medium tabular-nums", tone.text)}>
+            {isUnlimited ? t.credits.unlimited : formatCredits(remainingTokens)}
+          </span>
+          {!isUnlimited ? (
+            <span className="text-muted-foreground">{t.credits.label}</span>
           ) : null}
-          {quota.adminExempt ? (
-            <Badge variant="outline">管理员豁免</Badge>
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        align="end"
+        className="w-[min(20rem,calc(100vw-2rem))] p-4"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-foreground">{t.credits.title}</h2>
+          {!quota.enforced || isUnlimited ? (
+            <Badge variant="outline" className="text-[0.6875rem]">
+              {t.credits.observationMode}
+            </Badge>
           ) : null}
         </div>
 
-        <div className="mt-3 flex items-end justify-between border-b border-gray-100 pb-3">
-          <div>
-            <p className="text-gray-500">可用余额</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums text-gray-950">
-              {isUnlimited ? "不限额" : formatCredits(remainingTokens)}
+        <div className="mt-3 flex items-center gap-3 border-b border-border pb-3">
+          <span className="relative flex size-11 shrink-0 items-center justify-center">
+            <CreditRing
+              usedPercent={usedPercent}
+              className={cn("size-11", tone.stroke)}
+            />
+            <span className="absolute text-[0.625rem] font-medium tabular-nums text-muted-foreground">
+              {isUnlimited ? "∞" : `${Math.round(usedPercent)}%`}
+            </span>
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground">{t.credits.available}</p>
+            <p className="mt-0.5 text-xl font-semibold tabular-nums leading-tight text-foreground">
+              {isUnlimited ? t.credits.unlimited : formatCredits(remainingTokens)}
               {!isUnlimited ? (
-                <span className="ml-1 text-xs font-medium text-gray-500">
-                  Credit
+                <span className="ml-1 text-xs font-medium text-muted-foreground">
+                  {t.credits.label}
                 </span>
               ) : null}
             </p>
           </div>
-          {!isUnlimited ? (
-            <span className="pb-0.5 font-medium tabular-nums text-gray-700">
-              {Math.round(usedPercent)}% 已消耗
-            </span>
-          ) : null}
         </div>
 
-        <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 tabular-nums">
-          <dt>今日额度</dt>
-          <dd className="text-right font-medium text-gray-900">
+        <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-xs tabular-nums text-muted-foreground">
+          <dt>{t.credits.dailyQuota}</dt>
+          <dd className="text-right font-medium text-foreground">
             {isUnlimited
-              ? "不限额"
-              : `${formatCredits(quota.quotaLimitTokens)} Credit`}
+              ? t.credits.unlimited
+              : `${formatCredits(quota.quotaLimitTokens)} ${t.credits.label}`}
           </dd>
-          <dt>已消耗</dt>
-          <dd className="text-right font-medium text-gray-900">
-            {formatCredits(quota.usedTokens)} Credit
+          <dt>{t.credits.used}</dt>
+          <dd className="text-right font-medium text-foreground">
+            {formatCredits(quota.usedTokens)} {t.credits.label}
           </dd>
-          <dt>处理中预留</dt>
-          <dd className="text-right font-medium text-gray-900">
-            {formatCredits(quota.reservedTokens)} Credit
+          <dt>{t.credits.reserved}</dt>
+          <dd className="text-right font-medium text-foreground">
+            {formatCredits(quota.reservedTokens)} {t.credits.label}
           </dd>
-          <dt>重置时间</dt>
-          <dd className="text-right font-medium text-gray-900">
-            {new Date(quota.resetAt).toLocaleString("zh-CN", {
+          <dt>{t.credits.resetAt}</dt>
+          <dd className="text-right font-medium text-foreground">
+            {new Date(quota.resetAt).toLocaleString(intlLocale, {
               month: "numeric",
               day: "numeric",
               hour: "2-digit",
@@ -174,8 +190,14 @@ export default function CreditQuotaIndicator({
             })}
           </dd>
         </dl>
-        {error ? <p className="mt-2 text-red-700">{error}</p> : null}
-      </CollapsibleContent>
-    </Collapsible>
+
+        <p className="mt-3 text-[0.6875rem] leading-4 text-muted-foreground">
+          {t.credits.footnote}
+        </p>
+        {error ? (
+          <p className="mt-2 text-xs text-destructive">{error}</p>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

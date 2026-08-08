@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
+import { useT } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,7 +43,7 @@ const statusClasses: Record<string, string> = {
   pending: "border-amber-200 bg-amber-50 text-amber-700",
   in_progress: "border-sky-200 bg-sky-50 text-sky-700",
   resolved: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  closed: "border-gray-200 bg-gray-100 text-gray-600",
+  closed: "border-border bg-muted text-muted-foreground",
 };
 
 const priorityLabels: Record<string, string> = {
@@ -53,7 +54,7 @@ const priorityLabels: Record<string, string> = {
 };
 
 const priorityDots: Record<string, string> = {
-  low: "bg-gray-400",
+  low: "bg-muted-foreground",
   medium: "bg-amber-500",
   high: "bg-orange-500",
   urgent: "bg-red-500",
@@ -67,6 +68,7 @@ const noteLabels: Record<string, string> = {
 };
 
 export default function TicketDetail({ params }: TicketDetailProps) {
+  const t = useT();
   const { user } = useAuth();
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
@@ -127,40 +129,39 @@ export default function TicketDetail({ params }: TicketDetailProps) {
 
   if (ticketLoading) {
     return (
-      <div className="min-h-screen bg-background pt-[5.75rem]">
-        <PageNav />
-        <div className="flex h-[calc(100vh-5.75rem)] items-center justify-center">
+      <AppShell title={t.tickets.title}>
+        <div className="flex justify-center py-16">
           <Spinner className="size-5" />
         </div>
-      </div>
+      </AppShell>
     );
   }
 
   if (!ticket) {
     return (
-      <div className="min-h-screen bg-background pt-[5.75rem]">
-        <PageNav />
-        <main className="mx-auto max-w-4xl px-6 py-16 text-center">
-          <p className="text-sm font-medium text-gray-900">工单不存在或您无权查看</p>
+      <AppShell title={t.tickets.title}>
+        <div className="py-16 text-center">
+          <p className="text-sm font-medium text-foreground">
+            {t.tickets.notFound}
+          </p>
           <Button variant="outline" size="sm" onClick={() => setLocation("/tickets")} className="mt-4">
-            返回工单
+            {t.tickets.backToTickets}
           </Button>
-        </main>
-      </div>
+        </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background pt-[5.75rem]">
-      <PageNav />
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
+    <AppShell title={t.tickets.detailTitle(ticketId)} maxWidth="wide">
+      <div>
 
-        <header className="mb-6 border-b border-gray-200 pb-6">
+        <header className="mb-6 border-b border-border pb-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <p className="font-mono text-xs text-gray-400">工单 #{ticket.id}</p>
-              <h1 className="mt-2 break-words text-2xl font-semibold text-gray-950">{ticket.title}</h1>
-              <p className="mt-2 flex items-center gap-2 text-sm text-gray-500">
+              <p className="font-mono text-xs text-muted-foreground">工单 #{ticket.id}</p>
+              <h1 className="mt-2 break-words text-2xl font-semibold text-foreground">{ticket.title}</h1>
+              <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
                 <CalendarDays className="size-4" />
                 {new Date(ticket.createdAt).toLocaleString("zh-CN")}
               </p>
@@ -169,7 +170,7 @@ export default function TicketDetail({ params }: TicketDetailProps) {
               <Badge variant="outline" className={statusClasses[ticket.status] ?? statusClasses.closed}>
                 {statusLabels[ticket.status] ?? ticket.status}
               </Badge>
-              <Badge variant="outline" className="gap-1.5 bg-white text-gray-600">
+              <Badge variant="outline" className="gap-1.5 bg-card text-muted-foreground">
                 <span className={`size-1.5 rounded-full ${priorityDots[ticket.priority] ?? priorityDots.low}`} />
                 {priorityLabels[ticket.priority] ?? ticket.priority}优先级
               </Badge>
@@ -179,19 +180,19 @@ export default function TicketDetail({ params }: TicketDetailProps) {
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
           <div className="space-y-6">
-            <section className="rounded-lg border border-gray-200 bg-white p-5 sm:p-6">
-              <h2 className="text-sm font-semibold text-gray-900">问题描述</h2>
-              <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-7 text-gray-700">
+            <section className="rounded-lg border border-border bg-card p-5 sm:p-6">
+              <h2 className="text-sm font-semibold text-foreground">问题描述</h2>
+              <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-7 text-muted-foreground">
                 {ticket.description}
               </p>
             </section>
 
-            <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-              <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-                <h2 className="text-sm font-semibold text-gray-900">处理记录</h2>
-                <p className="mt-1 text-xs text-gray-500">备注和状态变更按时间排列</p>
+            <section className="overflow-hidden rounded-lg border border-border bg-card">
+              <div className="border-b border-border px-5 py-4 sm:px-6">
+                <h2 className="text-sm font-semibold text-foreground">处理记录</h2>
+                <p className="mt-1 text-xs text-muted-foreground">备注和状态变更按时间排列</p>
               </div>
-              <div className="border-b border-gray-100 bg-gray-50 p-4 sm:px-6">
+              <div className="border-b border-border bg-muted/60 p-4 sm:px-6">
                 <Textarea
                   aria-label="添加工单备注"
                   placeholder="补充处理进展或用户反馈"
@@ -214,57 +215,57 @@ export default function TicketDetail({ params }: TicketDetailProps) {
               {notesLoading ? (
                 <div className="flex h-32 items-center justify-center"><Spinner className="size-5" /></div>
               ) : notes && notes.length > 0 ? (
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-border">
                   {notes.map((note: any) => (
                     <div key={note.id} className="flex gap-3 px-5 py-4 sm:px-6">
-                      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-500">
+                      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
                         <Activity className="size-3.5" />
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-sm font-medium text-gray-900">
+                          <p className="text-sm font-medium text-foreground">
                             {noteLabels[note.noteType] ?? "处理记录"}
                           </p>
-                          <span className="text-xs text-gray-400">
+                          <span className="text-xs text-muted-foreground">
                             {formatDistanceToNow(new Date(note.createdAt), { locale: zhCN, addSuffix: true })}
                           </span>
                         </div>
-                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-gray-600">{note.content}</p>
+                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{note.content}</p>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="px-6 py-10 text-center text-sm text-gray-500">暂无处理记录</p>
+                <p className="px-6 py-10 text-center text-sm text-muted-foreground">暂无处理记录</p>
               )}
             </section>
 
-            <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-              <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-                <h2 className="text-sm font-semibold text-gray-900">关联聊天</h2>
-                <p className="mt-1 text-xs text-gray-500">由智能客服转入该工单的对话</p>
+            <section className="overflow-hidden rounded-lg border border-border bg-card">
+              <div className="border-b border-border px-5 py-4 sm:px-6">
+                <h2 className="text-sm font-semibold text-foreground">关联聊天</h2>
+                <p className="mt-1 text-xs text-muted-foreground">由智能客服转入该工单的对话</p>
               </div>
               {chatLoading ? (
                 <div className="flex h-32 items-center justify-center"><Spinner className="size-5" /></div>
               ) : chatHistory && chatHistory.length > 0 ? (
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-border">
                   {chatHistory.map((message: any) => (
                     <div key={message.id} className="flex gap-3 px-5 py-4 sm:px-6">
-                      <span className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md ${message.role === "user" ? "bg-gray-200 text-gray-700" : "bg-gray-950 text-white"}`}>
+                      <span className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md ${message.role === "user" ? "bg-accent text-muted-foreground" : "bg-primary text-primary-foreground"}`}>
                         {message.role === "user" ? <CircleUserRound className="size-3.5" /> : <Bot className="size-3.5" />}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs font-medium text-gray-500">{message.role === "user" ? "用户" : "AI 客服"}</span>
-                          <span className="text-xs text-gray-400">
+                          <span className="text-xs font-medium text-muted-foreground">{message.role === "user" ? "用户" : "AI 客服"}</span>
+                          <span className="text-xs text-muted-foreground">
                             {formatDistanceToNow(new Date(message.createdAt), { locale: zhCN, addSuffix: true })}
                           </span>
                         </div>
-                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-gray-700">{message.content}</p>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{message.content}</p>
                         {message.relatedKnowledge?.length > 0 ? (
                           <div className="mt-3 flex flex-wrap gap-1.5">
                             {message.relatedKnowledge.map((kb: any) => (
-                              <Badge key={kb.id} variant="outline" className="bg-gray-50 text-gray-500">
+                              <Badge key={kb.id} variant="outline" className="bg-muted/60 text-muted-foreground">
                                 {kb.category} · {kb.title}
                               </Badge>
                             ))}
@@ -276,38 +277,38 @@ export default function TicketDetail({ params }: TicketDetailProps) {
                 </div>
               ) : (
                 <div className="px-6 py-10 text-center">
-                  <MessageSquareText className="mx-auto size-5 text-gray-300" />
-                  <p className="mt-2 text-sm text-gray-500">暂无关联聊天</p>
+                  <MessageSquareText className="mx-auto size-5 text-muted-foreground/60" />
+                  <p className="mt-2 text-sm text-muted-foreground">暂无关联聊天</p>
                 </div>
               )}
             </section>
           </div>
 
           <aside className="space-y-6">
-            <section className="rounded-lg border border-gray-200 bg-white p-4">
-              <h2 className="text-sm font-semibold text-gray-900">工单信息</h2>
+            <section className="rounded-lg border border-border bg-card p-4">
+              <h2 className="text-sm font-semibold text-foreground">工单信息</h2>
               <dl className="mt-4 space-y-4 text-sm">
                 <div className="flex items-center justify-between gap-4">
-                  <dt className="text-gray-500">状态</dt>
-                  <dd className="font-medium text-gray-900">{statusLabels[ticket.status]}</dd>
+                  <dt className="text-muted-foreground">状态</dt>
+                  <dd className="font-medium text-foreground">{statusLabels[ticket.status]}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <dt className="text-gray-500">优先级</dt>
-                  <dd className="font-medium text-gray-900">{priorityLabels[ticket.priority]}</dd>
+                  <dt className="text-muted-foreground">优先级</dt>
+                  <dd className="font-medium text-foreground">{priorityLabels[ticket.priority]}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <dt className="text-gray-500">编号</dt>
-                  <dd className="font-mono text-xs text-gray-700">#{ticket.id}</dd>
+                  <dt className="text-muted-foreground">编号</dt>
+                  <dd className="font-mono text-xs text-muted-foreground">#{ticket.id}</dd>
                 </div>
               </dl>
             </section>
 
             {user?.role === "admin" ? (
-              <section className="rounded-lg border border-gray-200 bg-white p-4">
-                <h2 className="text-sm font-semibold text-gray-900">处理工单</h2>
+              <section className="rounded-lg border border-border bg-card p-4">
+                <h2 className="text-sm font-semibold text-foreground">处理工单</h2>
                 <div className="mt-4 space-y-5">
                   <div>
-                    <label className="mb-2 block text-xs font-medium text-gray-500">更新状态</label>
+                    <label className="mb-2 block text-xs font-medium text-muted-foreground">更新状态</label>
                     <Select value={newStatus} onValueChange={setNewStatus}>
                       <SelectTrigger className="w-full"><SelectValue placeholder="选择状态" /></SelectTrigger>
                       <SelectContent>
@@ -321,8 +322,8 @@ export default function TicketDetail({ params }: TicketDetailProps) {
                       应用状态
                     </Button>
                   </div>
-                  <div className="border-t border-gray-100 pt-4">
-                    <label className="mb-2 block text-xs font-medium text-gray-500">更新优先级</label>
+                  <div className="border-t border-border pt-4">
+                    <label className="mb-2 block text-xs font-medium text-muted-foreground">更新优先级</label>
                     <Select value={newPriority} onValueChange={setNewPriority}>
                       <SelectTrigger className="w-full"><SelectValue placeholder="选择优先级" /></SelectTrigger>
                       <SelectContent>
@@ -341,7 +342,7 @@ export default function TicketDetail({ params }: TicketDetailProps) {
             ) : null}
           </aside>
         </div>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

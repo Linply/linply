@@ -4,10 +4,10 @@ import * as db from "../db";
 import type { McpUserContext } from "./auth";
 import { toSafeKnowledgeDto } from "../knowledge/security";
 import {
-  getAgentRunForUser,
-  getTicketAndNotesForUser,
-  getTicketForUser,
-  listTicketsForUser,
+  getAgentRunForWorkspace,
+  getTicketAndNotesForScope,
+  getTicketForScope,
+  listTicketsForScope,
 } from "../accessControl";
 import {
   asTextContent,
@@ -35,7 +35,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const entries = await db.searchKnowledge(input.query, input.limit);
+      const entries = await db.searchKnowledge(user.workspaceId, input.query, input.limit);
       return asTextContent({
         count: entries.length,
         entries: entries.map(entry =>
@@ -50,7 +50,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
     {
       title: "List Tickets",
       description:
-        "List support tickets visible to the configured MCP user. Non-admin users only see their own tickets.",
+        "List support tickets in the configured MCP user's workspace.",
       inputSchema: {
         status: z.enum(["pending", "in_progress", "resolved", "closed"]).optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
@@ -63,13 +63,16 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const tickets = await listTicketsForUser({
-        status: input.status,
-        priority: input.priority,
-        search: input.search,
-        limit: input.limit,
-        offset: input.offset,
-      }, user);
+      const tickets = await listTicketsForScope(
+        {
+          status: input.status,
+          priority: input.priority,
+          search: input.search,
+          limit: input.limit,
+          offset: input.offset,
+        },
+        user.scope
+      );
 
       return asTextContent({
         count: tickets.length,
@@ -92,7 +95,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const { ticket, notes } = await getTicketAndNotesForUser(input.id, user);
+      const { ticket, notes } = await getTicketAndNotesForScope(input.id, user.scope);
       return asTextContent(serializeTicketDetail(ticket, notes));
     }
   );
@@ -114,6 +117,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
     },
     async input => {
       const ticket = await db.createTicket({
+        workspaceId: user.workspaceId,
         userId: user.id,
         title: input.title,
         description: input.description,
@@ -143,7 +147,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      await getTicketForUser(input.ticketId, user);
+      await getTicketForScope(input.ticketId, user.scope);
       await db.addTicketNote({
         ticketId: input.ticketId,
         userId: user.id,
@@ -163,7 +167,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
     {
       title: "Get Agent Run",
       description:
-        "Get an Agent Run with summarized steps, tool calls, final output, and errors. Non-admin users only see their own runs.",
+        "Get an Agent Run from the configured MCP user's workspace, with summarized steps, tool calls, final output, and errors.",
       inputSchema: {
         id: z.string().uuid(),
       },
@@ -172,7 +176,7 @@ export function registerMcpTools(server: McpServer, user: McpUserContext) {
       },
     },
     async input => {
-      const run = await getAgentRunForUser(input.id, user);
+      const run = await getAgentRunForWorkspace(input.id, user.workspaceId);
       return asTextContent(serializeAgentRun(run));
     }
   );

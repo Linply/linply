@@ -20,10 +20,10 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit migrate",
     "db:seed": "node scripts/seed-data.mjs",
-    "auth:create-admin": "tsx scripts/create-admin.ts",
     "kb:embed": "tsx scripts/embed-knowledge.mjs",
     "kb:embed:check": "tsx scripts/check-openai-embedding.mjs",
-    "kb:storage:cors": "node scripts/configure-knowledge-bucket-cors.mjs"
+    "kb:storage:cors": "node scripts/configure-knowledge-bucket-cors.mjs",
+    "auth:create-user": "tsx scripts/create-user.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1097.0",

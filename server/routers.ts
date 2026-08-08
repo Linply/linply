@@ -1,4 +1,9 @@
-import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
+import {
+  publicProcedure,
+  router,
+  protectedProcedure,
+  workspaceProcedure,
+} from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import * as db from "./db";
@@ -33,8 +38,8 @@ import {
 import { ENV } from "./_core/env";
 import {
   clearSessionCookie,
-  isDemoAdminConfigured,
-  loginAsDemoAdmin,
+  isDemoAccountConfigured,
+  loginAsDemoAccount,
   loginWithPassword,
   registerWithPassword,
   revokeRequestSession,
@@ -42,22 +47,57 @@ import {
 } from "./_core/auth";
 import { isGoogleOAuthConfigured } from "./_core/googleOAuth";
 import {
-  getAgentRunForUser,
-  getAgentRunRecordForUser,
-  getChatHistoryForUser,
-  getTicketChatHistoryForUser,
-  getTicketForUser,
-  getTicketNotesForUser,
-  listTicketsForUser,
+  getAgentRunForWorkspace,
+  getAgentRunRecordForWorkspace,
+  getChatHistoryForScope,
+  getTicketChatHistoryForScope,
+  getTicketForScope,
+  getTicketNotesForScope,
+  listTicketsForScope,
 } from "./accessControl";
 import {
   buildKnowledgeEmbeddingInput,
   createEmbedding,
   isEmbeddingEnabled,
 } from "./_core/embeddings";
+import { getChannelAdapter } from "./channels/inbound";
+import {
+  buildTelegramWebhookUrl,
+  isPublicWebhookUrl,
+  telegramAdapter,
+  TelegramApiError,
+} from "./channels/telegram";
+import { CHANNEL_PROVIDERS, toChannelDto } from "./channels/types";
+import {
+  checkLimit,
+  PLAN_ORDER,
+  PLANS,
+  WORKSPACE_PLANS,
+  type WorkspacePlan,
+} from "../shared/plans";
 
-const reindexKnowledgeEntry = async (id: number) => {
-  const entry = await db.getKnowledgeEntryById(id);
+/**
+ * Throws the standard "you hit your plan limit" error. Kept in one place so the
+ * message and error code stay identical across every metered mutation.
+ */
+const assertWithinPlan = async (
+  workspaceId: number,
+  plan: WorkspacePlan,
+  key: "knowledgeEntries" | "connectedChannels",
+  requested = 1
+) => {
+  const usage = await db.getWorkspacePlanUsage(workspaceId);
+  const result = checkLimit(plan, key, usage[key], requested);
+  if (!result.allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `PLAN_LIMIT_REACHED:${key}:${result.limit}`,
+    });
+  }
+};
+
+const reindexKnowledgeEntry = async (id: number, workspaceId: number) => {
+  const entry = await db.getKnowledgeEntryById(id, workspaceId);
   if (!entry) throw new Error("Knowledge entry not found");
   if (entry.securityStatus !== "approved") {
     await db.updateKnowledgeEntry(id, {
@@ -78,6 +118,7 @@ const reindexKnowledgeEntry = async (id: number) => {
     });
     const conflict = await db.detectEntryConflict({
       id: entry.id,
+      workspaceId: entry.workspaceId,
       title: entry.title,
       documentId: entry.documentId,
       embedding: null,
@@ -105,6 +146,7 @@ const reindexKnowledgeEntry = async (id: number) => {
     await db.setKnowledgeEntryEmbedding(id, embedding);
     const conflict = await db.detectEntryConflict({
       id: entry.id,
+      workspaceId: entry.workspaceId,
       title: entry.title,
       documentId: entry.documentId,
       embedding,
@@ -123,11 +165,28 @@ const reindexKnowledgeEntry = async (id: number) => {
   }
 };
 
+/** Every document lookup goes through here so cross-workspace ids 404 early. */
+const getOwnedDocument = async (documentId: number, workspaceId: number) => {
+  const document = await db.getKnowledgeDocument(documentId);
+  if (!document || document.workspaceId !== workspaceId) {
+    throw new TRPCError({ code: "NOT_FOUND" });
+  }
+  return document;
+};
+
+const ONBOARDING_STEPS = [
+  "profile",
+  "knowledge",
+  "preview",
+  "channel",
+  "done",
+] as const;
+
 export const appRouter = router({
   auth: router({
     providers: publicProcedure.query(() => ({
       google: isGoogleOAuthConfigured(),
-      demoAdmin: isDemoAdminConfigured(),
+      demoAccount: isDemoAccountConfigured(),
     })),
     me: publicProcedure.query(opts =>
       opts.ctx.user ? toPublicUser(opts.ctx.user) : null
@@ -180,9 +239,9 @@ export const appRouter = router({
           throw error;
         }
       }),
-    demoAdminLogin: publicProcedure.mutation(async ({ ctx }) => {
+    demoLogin: publicProcedure.mutation(async ({ ctx }) => {
       try {
-        return await loginAsDemoAdmin(ctx.req, ctx.res);
+        return await loginAsDemoAccount(ctx.req, ctx.res);
       } catch (error) {
         if (
           typeof error === "object" &&
@@ -192,7 +251,7 @@ export const appRouter = router({
         ) {
           throw new TRPCError({
             code: "UNAUTHORIZED",
-            message: "管理员演示入口暂不可用，请改用账号密码登录",
+            message: "体验入口暂不可用，请改用账号密码登录",
           });
         }
         throw error;
@@ -208,10 +267,322 @@ export const appRouter = router({
     }),
   }),
 
+  // ============ Workspace Router ============
+  workspace: router({
+    /** The single call every authenticated page makes on load. */
+    get: workspaceProcedure.query(async ({ ctx }) => {
+      const [overview, channels, planUsage] = await Promise.all([
+        db.getWorkspaceOverview(ctx.workspace.id),
+        db.listWorkspaceChannels(ctx.workspace.id),
+        db.getWorkspacePlanUsage(ctx.workspace.id),
+      ]);
+
+      return {
+        id: ctx.workspace.id,
+        name: ctx.workspace.name,
+        agentName: ctx.workspace.agentName,
+        agentTone: ctx.workspace.agentTone,
+        greeting: ctx.workspace.greeting,
+        fallbackReply: ctx.workspace.fallbackReply,
+        businessContext: ctx.workspace.businessContext,
+        publicChatEnabled: ctx.workspace.publicChatEnabled,
+        publicKey: ctx.workspace.publicKey,
+        plan: ctx.workspace.plan,
+        planActivatedAt: ctx.workspace.planActivatedAt,
+        planUsage,
+        onboardingStep: ctx.workspace.onboardingStep,
+        onboardingCompletedAt: ctx.workspace.onboardingCompletedAt,
+        createdAt: ctx.workspace.createdAt,
+        overview,
+        channels: channels.map(toChannelDto),
+      };
+    }),
+
+    update: workspaceProcedure
+      .input(
+        z.object({
+          name: z.string().trim().min(1).max(80).optional(),
+          agentName: z.string().trim().min(1).max(60).optional(),
+          agentTone: z
+            .enum(["professional", "friendly", "concise"])
+            .optional(),
+          greeting: z.string().trim().max(500).nullable().optional(),
+          fallbackReply: z.string().trim().max(500).nullable().optional(),
+          businessContext: z.string().trim().max(2_000).nullable().optional(),
+          publicChatEnabled: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const workspace = await db.updateWorkspace(ctx.workspace.id, input);
+        if (!workspace) throw new TRPCError({ code: "NOT_FOUND" });
+        return { success: true as const };
+      }),
+
+    setOnboardingStep: workspaceProcedure
+      .input(z.object({ step: z.enum(ONBOARDING_STEPS) }))
+      .mutation(async ({ input, ctx }) => {
+        await db.updateWorkspace(ctx.workspace.id, {
+          onboardingStep: input.step,
+          onboardingCompletedAt:
+            input.step === "done"
+              ? (ctx.workspace.onboardingCompletedAt ?? new Date())
+              : null,
+        });
+        return { success: true as const };
+      }),
+  }),
+
+  // ============ Plans Router ============
+  plans: router({
+    get: workspaceProcedure.query(async ({ ctx }) => {
+      const [usage, openRequest] = await Promise.all([
+        db.getWorkspacePlanUsage(ctx.workspace.id),
+        db.getOpenPlanRequest(ctx.workspace.id),
+      ]);
+
+      return {
+        currentPlan: ctx.workspace.plan,
+        planActivatedAt: ctx.workspace.planActivatedAt,
+        usage,
+        pendingRequest: openRequest
+          ? { toPlan: openRequest.toPlan, createdAt: openRequest.createdAt }
+          : null,
+        /**
+         * `Infinity` does not survive JSON, so unlimited limits go over the
+         * wire as null and the client renders them as "Unlimited".
+         */
+        catalog: PLAN_ORDER.map(id => {
+          const plan = PLANS[id];
+          return {
+            id,
+            priceUsd: plan.priceUsd,
+            features: plan.features,
+            limits: Object.fromEntries(
+              Object.entries(plan.limits).map(([key, value]) => [
+                key,
+                Number.isFinite(value) ? value : null,
+              ])
+            ) as Record<keyof typeof plan.limits, number | null>,
+          };
+        }),
+      };
+    }),
+
+    /**
+     * Payment is not wired up yet: this records the intent and leaves the
+     * workspace on its current plan. Swapping in a checkout session later only
+     * changes this mutation.
+     */
+    requestUpgrade: workspaceProcedure
+      .input(
+        z.object({
+          plan: z.enum(WORKSPACE_PLANS),
+          note: z.string().trim().max(500).optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (input.plan === ctx.workspace.plan) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Already on this plan",
+          });
+        }
+        const request = await db.createPlanRequest({
+          workspaceId: ctx.workspace.id,
+          requestedBy: ctx.user.id,
+          fromPlan: ctx.workspace.plan,
+          toPlan: input.plan,
+          note: input.note,
+        });
+        return { status: "pending" as const, toPlan: request.toPlan };
+      }),
+
+    cancelRequest: workspaceProcedure.mutation(async ({ ctx }) => {
+      await db.cancelPlanRequest(ctx.workspace.id);
+      return { success: true as const };
+    }),
+  }),
+
+  // ============ Channels Router ============
+  channels: router({
+    list: workspaceProcedure.query(async ({ ctx }) => {
+      const channels = await db.listWorkspaceChannels(ctx.workspace.id);
+      const byProvider = new Map(
+        channels.map(channel => [channel.provider, channel])
+      );
+
+      return {
+        /** Public origin the webhook would be registered on. */
+        webhookReady: isPublicWebhookUrl(ENV.appBaseUrl),
+        publicChatUrl: `${ENV.appBaseUrl.replace(/\/+$/, "")}/a/${ctx.workspace.publicKey}`,
+        providers: CHANNEL_PROVIDERS.map(info => {
+          const channel = byProvider.get(info.provider);
+          return {
+            ...info,
+            connection: channel ? toChannelDto(channel) : null,
+            inviteUrl:
+              info.provider === "telegram" && channel?.displayName?.startsWith("@")
+                ? `https://t.me/${channel.displayName.slice(1)}`
+                : null,
+          };
+        }),
+      };
+    }),
+
+    connectTelegram: workspaceProcedure
+      .input(
+        z.object({
+          botToken: z
+            .string()
+            .trim()
+            .regex(/^\d{6,}:[A-Za-z0-9_-]{30,}$/, "Bot Token 格式不正确"),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const existing = await db.getWorkspaceChannel(
+          ctx.workspace.id,
+          "telegram"
+        );
+        // Reconnecting an existing channel does not consume another slot.
+        if (!existing) {
+          await assertWithinPlan(
+            ctx.workspace.id,
+            ctx.workspace.plan,
+            "connectedChannels"
+          );
+        }
+
+        let identity: Awaited<ReturnType<typeof telegramAdapter.verify>>;
+        try {
+          identity = await telegramAdapter.verify({ botToken: input.botToken });
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              error instanceof TelegramApiError
+                ? error.message
+                : "无法验证 Bot Token",
+          });
+        }
+
+        const channel = await db.upsertWorkspaceChannel({
+          workspaceId: ctx.workspace.id,
+          provider: "telegram",
+          status: "pending",
+          displayName: identity.displayName,
+          externalId: identity.externalId,
+          credentials: { botToken: input.botToken },
+        });
+
+        try {
+          const { deliveryMode } = await telegramAdapter.activate(channel);
+          const connected = await db.updateWorkspaceChannel(channel.id, {
+            status: "connected",
+            deliveryMode,
+            lastError: null,
+          });
+          return {
+            channel: toChannelDto(connected ?? channel),
+            inviteUrl: identity.inviteUrl ?? null,
+            deliveryMode,
+            webhookUrl:
+              deliveryMode === "webhook"
+                ? buildTelegramWebhookUrl(channel.webhookSecret)
+                : null,
+          };
+        } catch (error) {
+          const message =
+            error instanceof TelegramApiError
+              ? error.message
+              : "接入 Telegram 失败";
+          await db.updateWorkspaceChannel(channel.id, {
+            status: "error",
+            lastError: message,
+          });
+          throw new TRPCError({ code: "BAD_REQUEST", message });
+        }
+      }),
+
+    setAutoReply: workspaceProcedure
+      .input(
+        z.object({
+          provider: z.enum(["web", "telegram", "slack", "feishu"]),
+          autoReply: z.boolean(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const channel = await db.getWorkspaceChannel(
+          ctx.workspace.id,
+          input.provider
+        );
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        await db.updateWorkspaceChannel(channel.id, {
+          autoReply: input.autoReply,
+        });
+        return { success: true as const };
+      }),
+
+    disconnect: workspaceProcedure
+      .input(
+        z.object({ provider: z.enum(["telegram", "slack", "feishu"]) })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const channel = await db.getWorkspaceChannel(
+          ctx.workspace.id,
+          input.provider
+        );
+        if (!channel) return { success: true as const };
+
+        // Best effort: the local record must go even if the provider is down.
+        await getChannelAdapter(input.provider)
+          ?.deactivate(channel)
+          .catch(() => undefined);
+        await db.deleteWorkspaceChannel(ctx.workspace.id, input.provider);
+        return { success: true as const };
+      }),
+  }),
+
+  // ============ Inbox Router ============
+  inbox: router({
+    listContacts: workspaceProcedure
+      .input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional())
+      .query(async ({ input, ctx }) =>
+        db.listWorkspaceContacts(ctx.workspace.id, input?.limit ?? 50)
+      ),
+
+    getConversation: workspaceProcedure
+      .input(
+        z.object({
+          contactId: z.number().int().positive(),
+          limit: z.number().int().min(1).max(200).default(100),
+        })
+      )
+      .query(async ({ input, ctx }) => {
+        const contact = await db.getChannelContactById(
+          input.contactId,
+          ctx.workspace.id
+        );
+        if (!contact) throw new TRPCError({ code: "NOT_FOUND" });
+        const messages = await db.getContactMessages(contact.id, input.limit);
+        return {
+          contact,
+          messages: messages.map(message => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            createdAt: message.createdAt,
+            agentRunId: message.agentRunId,
+            relatedKnowledge: parseJsonValue<
+              Array<{ id: number; title: string; category: string }>
+            >(message.relatedKnowledgeSnapshot, []),
+          })),
+        };
+      }),
+  }),
+
   // ============ Tickets Router ============
   tickets: router({
-    // 创建工单
-    create: protectedProcedure
+    create: workspaceProcedure
       .input(
         z.object({
           title: z.string().min(1),
@@ -220,24 +591,20 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const result = await db.createTicket({
+        return db.createTicket({
+          workspaceId: ctx.workspace.id,
           userId: ctx.user.id,
           title: input.title,
           description: input.description,
           priority: input.priority,
         });
-        return result;
       }),
 
-    // 获取工单详情
-    getById: protectedProcedure
+    getById: workspaceProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input, ctx }) => {
-        return getTicketForUser(input.id, ctx.user);
-      }),
+      .query(async ({ input, ctx }) => getTicketForScope(input.id, ctx.scope)),
 
-    // 列表工单（支持筛选和搜索）
-    list: protectedProcedure
+    list: workspaceProcedure
       .input(
         z.object({
           status: z.string().optional(),
@@ -247,12 +614,9 @@ export const appRouter = router({
           offset: z.number().optional().default(0),
         })
       )
-      .query(async ({ input, ctx }) => {
-        return listTicketsForUser(input, ctx.user);
-      }),
+      .query(async ({ input, ctx }) => listTicketsForScope(input, ctx.scope)),
 
-    // 更新工单
-    update: protectedProcedure
+    update: workspaceProcedure
       .input(
         z.object({
           id: z.number(),
@@ -266,9 +630,9 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const ticket = await getTicketForUser(input.id, ctx.user);
+        const ticket = await getTicketForScope(input.id, ctx.scope);
 
-        const updateData: any = {};
+        const updateData: Parameters<typeof db.updateTicket>[1] = {};
         if (input.title !== undefined) updateData.title = input.title;
         if (input.description !== undefined)
           updateData.description = input.description;
@@ -284,7 +648,6 @@ export const appRouter = router({
 
         await db.updateTicket(input.id, updateData);
 
-        // 记录状态变更
         if (input.status !== undefined && input.status !== ticket.status) {
           await db.addTicketNote({
             ticketId: input.id,
@@ -297,14 +660,13 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // 获取工单备注历史
-    getNotes: protectedProcedure
+    getNotes: workspaceProcedure
       .input(z.object({ ticketId: z.number() }))
-      .query(async ({ input, ctx }) => {
-        return getTicketNotesForUser(input.ticketId, ctx.user);
-      }),
+      .query(async ({ input, ctx }) =>
+        getTicketNotesForScope(input.ticketId, ctx.scope)
+      ),
 
-    getChatHistory: protectedProcedure
+    getChatHistory: workspaceProcedure
       .input(
         z.object({
           ticketId: z.number(),
@@ -312,10 +674,10 @@ export const appRouter = router({
         })
       )
       .query(async ({ input, ctx }) => {
-        const history = await getTicketChatHistoryForUser(
+        const history = await getTicketChatHistoryForScope(
           input.ticketId,
           input.limit,
-          ctx.user
+          ctx.scope
         );
         return history.map(message => ({
           ...message,
@@ -333,8 +695,7 @@ export const appRouter = router({
         }));
       }),
 
-    // 添加工单备注
-    addNote: protectedProcedure
+    addNote: workspaceProcedure
       .input(
         z.object({
           ticketId: z.number(),
@@ -342,7 +703,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        await getTicketForUser(input.ticketId, ctx.user);
+        await getTicketForScope(input.ticketId, ctx.scope);
         await db.addTicketNote({
           ticketId: input.ticketId,
           userId: ctx.user.id,
@@ -352,19 +713,14 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // 获取工单统计（仅管理员）
-    getStats: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role !== "admin") {
-        throw new Error("Unauthorized");
-      }
-      return await db.getTicketStats();
-    }),
+    getStats: workspaceProcedure.query(async ({ ctx }) =>
+      db.getTicketStats(ctx.workspace.id)
+    ),
   }),
 
   // ============ Knowledge Base Router ============
   knowledge: router({
-    // 获取知识库列表（仅管理员）
-    list: protectedProcedure
+    list: workspaceProcedure
       .input(
         z
           .object({
@@ -372,40 +728,34 @@ export const appRouter = router({
           })
           .optional()
       )
-      .query(async ({ ctx, input }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
-        return db.listKnowledgeEntries({
+      .query(async ({ ctx, input }) =>
+        db.listKnowledgeEntries(ctx.workspace.id, {
           securityStatus: input?.securityStatus,
-        });
-      }),
+        })
+      ),
 
-    // 搜索知识库（仅管理员）
-    search: protectedProcedure
+    search: workspaceProcedure
       .input(
         z.object({
           query: z.string().min(1),
           limit: z.number().optional().default(5),
         })
       )
-      .query(async ({ ctx, input }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
-        return await db.searchKnowledgeByKeyword(input.query, input.limit);
-      }),
+      .query(async ({ ctx, input }) =>
+        db.searchKnowledgeByKeyword(ctx.workspace.id, input.query, input.limit)
+      ),
 
-    // 按分类获取知识库
-    getByCategory: publicProcedure
+    getByCategory: workspaceProcedure
       .input(z.object({ category: z.string() }))
-      .query(async ({ input }) => {
-        const entries = await db.getKnowledgeByCategory(input.category);
+      .query(async ({ input, ctx }) => {
+        const entries = await db.getKnowledgeByCategory(
+          ctx.workspace.id,
+          input.category
+        );
         return entries.map(toSafeKnowledgeDto);
       }),
 
-    // 添加知识库条目（仅管理员）
-    add: protectedProcedure
+    add: workspaceProcedure
       .input(
         z.object({
           title: z.string().min(1),
@@ -415,12 +765,15 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
+        await assertWithinPlan(
+          ctx.workspace.id,
+          ctx.workspace.plan,
+          "knowledgeEntries"
+        );
         const scan = scanKnowledgeContent(input);
         const entry = await db.addKnowledgeEntry({
           ...input,
+          workspaceId: ctx.workspace.id,
           securityStatus: scan.status,
           securityScannerVersion: scan.scannerVersion,
           securityContentHash: scan.contentHash,
@@ -430,16 +783,15 @@ export const appRouter = router({
         });
         if (scan.status === "approved") {
           try {
-            await reindexKnowledgeEntry(entry.id);
+            await reindexKnowledgeEntry(entry.id, ctx.workspace.id);
           } catch {
-            // The mutation still succeeds so admins can fix embedding service later.
+            // The entry is saved; embedding can be retried from the list page.
           }
         }
         return entry;
       }),
 
-    // 编辑知识库条目（仅管理员）
-    updateEntry: protectedProcedure
+    updateEntry: workspaceProcedure
       .input(
         z.object({
           id: z.number(),
@@ -450,9 +802,12 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
+        const existing = await db.getKnowledgeEntryById(
+          input.id,
+          ctx.workspace.id
+        );
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
+
         const scan = scanKnowledgeContent(input);
         await db.updateKnowledgeEntry(input.id, {
           title: input.title,
@@ -485,15 +840,15 @@ export const appRouter = router({
         });
         if (scan.status === "approved") {
           try {
-            await reindexKnowledgeEntry(input.id);
+            await reindexKnowledgeEntry(input.id, ctx.workspace.id);
           } catch {
-            // Keep edited content even if embedding service is unavailable.
+            // Keep edited content even if embedding is unavailable.
           }
         }
         return { success: true, securityStatus: scan.status };
       }),
 
-    review: protectedProcedure
+    review: workspaceProcedure
       .input(
         z.object({
           id: z.number().int().positive(),
@@ -503,8 +858,10 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const entry = await db.getKnowledgeEntryById(input.id);
+        const entry = await db.getKnowledgeEntryById(
+          input.id,
+          ctx.workspace.id
+        );
         if (!entry) throw new TRPCError({ code: "NOT_FOUND" });
         const scan = scanKnowledgeContent(entry);
         if (scan.contentHash !== input.expectedContentHash) {
@@ -539,19 +896,21 @@ export const appRouter = router({
         }
         if (result.entry.securityStatus === "approved") {
           try {
-            await reindexKnowledgeEntry(result.entry.id);
+            await reindexKnowledgeEntry(result.entry.id, ctx.workspace.id);
           } catch {
-            // Approval persists; embedding can be retried by an administrator.
+            // Approval persists; embedding can be retried later.
           }
         }
         return result.entry;
       }),
 
-    rescan: protectedProcedure
+    rescan: workspaceProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const entry = await db.getKnowledgeEntryById(input.id);
+        const entry = await db.getKnowledgeEntryById(
+          input.id,
+          ctx.workspace.id
+        );
         if (!entry) throw new TRPCError({ code: "NOT_FOUND" });
         const scan = scanKnowledgeContent(entry);
         await db.updateKnowledgeEntry(entry.id, {
@@ -584,7 +943,7 @@ export const appRouter = router({
         }
         if (scan.status === "approved") {
           try {
-            await reindexKnowledgeEntry(entry.id);
+            await reindexKnowledgeEntry(entry.id, ctx.workspace.id);
           } catch {
             // Rescan succeeds even if embedding is temporarily unavailable.
           }
@@ -592,41 +951,35 @@ export const appRouter = router({
         return scan;
       }),
 
-    securityHistory: protectedProcedure
+    securityHistory: workspaceProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .query(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
+        const entry = await db.getKnowledgeEntryById(
+          input.id,
+          ctx.workspace.id
+        );
+        if (!entry) throw new TRPCError({ code: "NOT_FOUND" });
         return db.getKnowledgeSecurityHistory(input.id);
       }),
 
-    // 重新生成单条 embedding（仅管理员）
-    reindexEntry: protectedProcedure
+    reindexEntry: workspaceProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
-        return reindexKnowledgeEntry(input.id);
-      }),
+      .mutation(async ({ input, ctx }) =>
+        reindexKnowledgeEntry(input.id, ctx.workspace.id)
+      ),
 
-    // RAG 调试：返回召回模式、分数、fallback 原因（仅管理员）
-    debugSearch: protectedProcedure
+    debugSearch: workspaceProcedure
       .input(
         z.object({
           query: z.string().min(1),
           limit: z.number().optional().default(5),
         })
       )
-      .query(async ({ ctx, input }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
-        return db.debugSearchKnowledge(input.query, input.limit);
-      }),
+      .query(async ({ ctx, input }) =>
+        db.debugSearchKnowledge(ctx.workspace.id, input.query, input.limit)
+      ),
 
-    // 上传文档（Markdown/CSV），解析为知识条目并后台向量化（仅管理员）
-    uploadCapabilities: protectedProcedure.query(({ ctx }) => {
-      if (ctx.user.role !== "admin") throw new Error("Unauthorized");
+    uploadCapabilities: workspaceProcedure.query(() => {
       const storageConfigured = isKnowledgeStorageConfigured();
       const queueConfigured = isKnowledgeQueueConfigured();
       return {
@@ -636,7 +989,7 @@ export const appRouter = router({
       };
     }),
 
-    createUploadSession: protectedProcedure
+    createUploadSession: workspaceProcedure
       .input(
         z.object({
           filename: z.string().min(1).max(255),
@@ -647,7 +1000,6 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
         if (!isKnowledgeStorageConfigured() || !isKnowledgeQueueConfigured()) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
@@ -656,6 +1008,7 @@ export const appRouter = router({
         }
         const uploadPartSize = calculateMultipartPartSize(input.fileSize);
         const document = await db.createKnowledgeDocument({
+          workspaceId: ctx.workspace.id,
           filename: input.filename,
           fileType: input.fileType,
           uploadedBy: ctx.user.id,
@@ -695,14 +1048,10 @@ export const appRouter = router({
         }
       }),
 
-    getUploadSession: protectedProcedure
+    getUploadSession: workspaceProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .query(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const document = await db.getKnowledgeDocument(input.id);
-        if (!document || document.uploadedBy !== ctx.user.id) {
-          throw new TRPCError({ code: "NOT_FOUND" });
-        }
+        const document = await getOwnedDocument(input.id, ctx.workspace.id);
         return {
           id: document.id,
           filename: document.filename,
@@ -718,7 +1067,7 @@ export const appRouter = router({
         };
       }),
 
-    getUploadPartUrls: protectedProcedure
+    getUploadPartUrls: workspaceProcedure
       .input(
         z.object({
           documentId: z.number().int().positive(),
@@ -729,11 +1078,11 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const document = await db.getKnowledgeDocument(input.documentId);
+        const document = await getOwnedDocument(
+          input.documentId,
+          ctx.workspace.id
+        );
         if (
-          !document ||
-          document.uploadedBy !== ctx.user.id ||
           document.status !== "uploading" ||
           !document.objectKey ||
           !document.uploadId
@@ -766,17 +1115,14 @@ export const appRouter = router({
         });
       }),
 
-    listUploadedParts: protectedProcedure
+    listUploadedParts: workspaceProcedure
       .input(z.object({ documentId: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const document = await db.getKnowledgeDocument(input.documentId);
-        if (
-          !document ||
-          document.uploadedBy !== ctx.user.id ||
-          !document.objectKey ||
-          !document.uploadId
-        ) {
+        const document = await getOwnedDocument(
+          input.documentId,
+          ctx.workspace.id
+        );
+        if (!document.objectKey || !document.uploadId) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
         return listMultipartParts({
@@ -785,18 +1131,14 @@ export const appRouter = router({
         });
       }),
 
-    completeUpload: protectedProcedure
+    completeUpload: workspaceProcedure
       .input(z.object({ documentId: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const document = await db.getKnowledgeDocument(input.documentId);
-        if (
-          !document ||
-          document.uploadedBy !== ctx.user.id ||
-          !document.objectKey
-        ) {
-          throw new TRPCError({ code: "NOT_FOUND" });
-        }
+        const document = await getOwnedDocument(
+          input.documentId,
+          ctx.workspace.id
+        );
+        if (!document.objectKey) throw new TRPCError({ code: "NOT_FOUND" });
 
         if (document.status === "uploading") {
           if (
@@ -875,14 +1217,13 @@ export const appRouter = router({
         return { documentId: document.id, status: "parse_queued" as const };
       }),
 
-    abortUpload: protectedProcedure
+    abortUpload: workspaceProcedure
       .input(z.object({ documentId: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") throw new Error("Unauthorized");
-        const document = await db.getKnowledgeDocument(input.documentId);
-        if (!document || document.uploadedBy !== ctx.user.id) {
-          throw new TRPCError({ code: "NOT_FOUND" });
-        }
+        const document = await getOwnedDocument(
+          input.documentId,
+          ctx.workspace.id
+        );
         if (document.objectKey && document.uploadId) {
           await abortMultipartUpload({
             objectKey: document.objectKey,
@@ -898,8 +1239,8 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // 兼容未配置对象存储的本地环境；生产的大文件上传不使用此接口。
-    uploadDocument: protectedProcedure
+    /** Inline import used when object storage is not configured. */
+    uploadDocument: workspaceProcedure
       .input(
         z.object({
           filename: z.string().min(1).max(255),
@@ -909,10 +1250,13 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
-        return await ingestDocument({
+        await assertWithinPlan(
+          ctx.workspace.id,
+          ctx.workspace.plan,
+          "knowledgeEntries"
+        );
+        return ingestDocument({
+          workspaceId: ctx.workspace.id,
           filename: input.filename,
           fileType: input.fileType,
           content: input.content,
@@ -921,23 +1265,17 @@ export const appRouter = router({
         });
       }),
 
-    // 文档列表（含解析状态与索引进度，仅管理员）
-    listDocuments: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role !== "admin") {
-        throw new Error("Unauthorized");
-      }
-      return await db.listKnowledgeDocuments();
-    }),
+    listDocuments: workspaceProcedure.query(async ({ ctx }) =>
+      db.listKnowledgeDocuments(ctx.workspace.id)
+    ),
 
-    // 删除文档及其生成的全部知识条目（仅管理员）
-    deleteDocument: protectedProcedure
+    deleteDocument: workspaceProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
         const document = await db.getKnowledgeDocument(input.id);
-        if (!document) return { success: true };
+        if (!document || document.workspaceId !== ctx.workspace.id) {
+          return { success: true };
+        }
         if (document.objectKey && document.uploadId) {
           await abortMultipartUpload({
             objectKey: document.objectKey,
@@ -950,13 +1288,14 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // 删除单条知识条目（仅管理员）
-    deleteEntry: protectedProcedure
+    deleteEntry: workspaceProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        if (ctx.user.role !== "admin") {
-          throw new Error("Unauthorized");
-        }
+        const entry = await db.getKnowledgeEntryById(
+          input.id,
+          ctx.workspace.id
+        );
+        if (!entry) return { success: true };
         await db.deleteKnowledgeEntry(input.id);
         return { success: true };
       }),
@@ -964,8 +1303,42 @@ export const appRouter = router({
 
   // ============ Chat Router ============
   chat: router({
-    // 获取聊天历史
-    getHistory: protectedProcedure
+    /**
+     * Blocking single-turn ask used by the onboarding preview. The full console
+     * chat streams over SSE; the wizard only needs one answer and skipping the
+     * stream keeps that step to a few lines of state.
+     */
+    ask: workspaceProcedure
+      .input(z.object({ content: z.string().trim().min(1).max(2_000) }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          const response = await createAgentChatResponse({
+            scope: ctx.scope,
+            content: input.content,
+          });
+          return {
+            runId: response.runId,
+            reply: response.assistantMessage,
+            relatedKnowledge: response.relatedKnowledge,
+            retrieval: response.retrieval,
+          };
+        } catch (error) {
+          if (error instanceof TokenQuotaExceededError) {
+            throw new TRPCError({
+              code: "TOO_MANY_REQUESTS",
+              message: error.message,
+              cause: { code: TOKEN_QUOTA_EXCEEDED_CODE, quota: error.quota },
+            });
+          }
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              error instanceof Error ? error.message : "智能客服暂时无法回答",
+          });
+        }
+      }),
+
+    getHistory: workspaceProcedure
       .input(
         z.object({
           ticketId: z.number().optional(),
@@ -973,10 +1346,10 @@ export const appRouter = router({
         })
       )
       .query(async ({ input, ctx }) => {
-        const history = await getChatHistoryForUser(
+        const history = await getChatHistoryForScope(
           input.ticketId,
           input.limit,
-          ctx.user
+          ctx.scope
         );
         const runIds: string[] = Array.from(
           new Set(
@@ -992,7 +1365,10 @@ export const appRouter = router({
           parseJsonValue<number[]>(message.relatedKnowledgeIds, [])
         );
         const knowledgeById = new Map(
-          (await db.getKnowledgeByIds(ids)).map(entry => [entry.id, entry])
+          (await db.getKnowledgeByIds(ctx.workspace.id, ids)).map(entry => [
+            entry.id,
+            entry,
+          ])
         );
 
         return history.map(message => {
@@ -1033,19 +1409,19 @@ export const appRouter = router({
 
   // ============ Agent Runs Router ============
   agentRuns: router({
-    getTokenQuota: protectedProcedure.query(async ({ ctx }) =>
-      db.getTokenQuota(ctx.user.id, ctx.user.role)
+    getTokenQuota: workspaceProcedure.query(async ({ ctx }) =>
+      db.getTokenQuota(ctx.user.id, ctx.workspace.plan)
     ),
 
-    getById: protectedProcedure
+    getById: workspaceProcedure
       .input(z.object({ id: z.string().uuid() }))
-      .query(async ({ input, ctx }) => {
-        return getAgentRunForUser(input.id, ctx.user);
-      }),
+      .query(async ({ input, ctx }) =>
+        getAgentRunForWorkspace(input.id, ctx.workspace.id)
+      ),
 
-    listActive: protectedProcedure.query(async ({ ctx }) => {
-      const runs = await db.listActiveAgentRunsForUser(ctx.user.id);
-      return runs.map((run) => ({
+    listActive: workspaceProcedure.query(async ({ ctx }) => {
+      const runs = await db.listActiveAgentRunsForWorkspace(ctx.workspace.id);
+      return runs.map(run => ({
         runId: run.id,
         status: run.status,
         input: run.input,
@@ -1054,7 +1430,7 @@ export const appRouter = router({
       }));
     }),
 
-    summarizeRecentTickets: protectedProcedure
+    summarizeRecentTickets: workspaceProcedure
       .input(
         z
           .object({
@@ -1068,14 +1444,10 @@ export const appRouter = router({
           ? `请查询并总结最近与“${input.search}”相关的工单，给出状态、风险等级和建议下一步动作。`
           : `请查询并总结我最近 ${input?.limit ?? 5} 个工单，给出状态、风险等级和建议下一步动作。`;
 
-        return createAgentChatResponse({
-          userId: ctx.user.id,
-          userRole: ctx.user.role,
-          content: query,
-        });
+        return createAgentChatResponse({ scope: ctx.scope, content: query });
       }),
 
-    retry: protectedProcedure
+    retry: workspaceProcedure
       .input(
         z.object({
           id: z.string().uuid(),
@@ -1083,12 +1455,19 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const existingRun = await getAgentRunRecordForUser(input.id, ctx.user);
+        const existingRun = await getAgentRunRecordForWorkspace(
+          input.id,
+          ctx.workspace.id
+        );
 
         try {
           const run = await enqueueAgentRun({
-            userId: existingRun.userId,
-            userRole: ctx.user.role,
+            scope: {
+              workspaceId: existingRun.workspaceId,
+              ownerUserId: existingRun.userId,
+              contactId: existingRun.contactId,
+              channelId: existingRun.channelId,
+            },
             ticketId: existingRun.ticketId ?? undefined,
             content: input.content ?? existingRun.input,
             retryOfRunId: existingRun.id,

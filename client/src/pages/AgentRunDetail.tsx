@@ -1,5 +1,6 @@
 import type { AgentStep } from "@/components/agentTimeline";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
+import { useT } from "@/i18n";
 import ToolTimeline from "@/components/ToolTimeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,7 +35,7 @@ const statusLabels: Record<string, string> = {
 };
 
 const statusClasses: Record<string, string> = {
-  queued: "border-gray-200 bg-gray-100 text-gray-700",
+  queued: "border-border bg-muted text-muted-foreground",
   planning: "border-sky-200 bg-sky-50 text-sky-700",
   running: "border-sky-200 bg-sky-50 text-sky-700",
   waiting_approval: "border-amber-200 bg-amber-50 text-amber-700",
@@ -90,7 +91,7 @@ const usageStateMeta: Record<
   no_model: {
     label: "模型未启动",
     description: "本次尝试未启动模型，不计入 Token 额度。",
-    className: "border-gray-200 bg-gray-50 text-gray-600",
+    className: "border-border bg-muted/60 text-muted-foreground",
   },
   unknown: {
     label: "实际用量未知",
@@ -112,6 +113,7 @@ const formatTimestamp = (value?: string | Date | null) =>
     : "未记录";
 
 export default function AgentRunDetail({ params }: AgentRunDetailProps) {
+  const t = useT();
   const [, setLocation] = useLocation();
   const runId = params.runId;
   const validRunId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId);
@@ -156,32 +158,34 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background pt-[5.75rem]">
-        <PageNav />
-        <div className="flex h-[calc(100vh-5.75rem)] items-center justify-center">
+      <AppShell title={t.agentRun.title}>
+        <div className="flex justify-center py-16">
           <Spinner className="size-5" />
         </div>
-      </div>
+      </AppShell>
     );
   }
 
   if (!run) {
     return (
-      <div className="min-h-screen bg-background pt-[5.75rem]">
-        <PageNav />
-        <main className="mx-auto max-w-4xl px-6 py-16 text-center">
-          <p className="text-sm font-medium text-gray-900">Agent Run 不存在</p>
-          <p className="mt-1 text-sm text-gray-500">请检查 Run ID 是否完整或是否有查看权限</p>
+      <AppShell title={t.agentRun.title}>
+        <div className="py-16 text-center">
+          <p className="text-sm font-medium text-foreground">
+            {t.agentRun.notFound}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t.agentRun.notFoundHint}
+          </p>
           <Button
             variant="outline"
             size="sm"
             className="mt-4"
             onClick={() => setLocation("/chat")}
           >
-            返回智能客服
+            {t.agentRun.backToChat}
           </Button>
-        </main>
-      </div>
+        </div>
+      </AppShell>
     );
   }
 
@@ -239,14 +243,18 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
   ];
 
   return (
-    <div className="min-h-screen bg-background pt-[5.75rem]">
-      <PageNav />
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
+    <AppShell
+      title={t.agentRun.title}
+      description={t.agentRun.subtitle}
+      maxWidth="wide"
+    >
+      <div>
         <header className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
-            <p className="text-sm text-gray-500">Agent 可观测性</p>
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold text-gray-950">运行详情</h1>
+              <h1 className="text-2xl font-semibold text-foreground">
+                {t.agentRun.title}
+              </h1>
               <Badge
                 variant="outline"
                 className={statusClasses[run.status] ?? statusClasses.queued}
@@ -254,7 +262,7 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                 {statusLabels[run.status] ?? run.status}
               </Badge>
             </div>
-            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-gray-500">
+            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
               <code className="break-all font-mono">{run.id}</code>
               <Button
                 type="button"
@@ -263,12 +271,12 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                 onClick={() => copyValue(runId, " Run ID")}
                 aria-label="复制 Run ID"
                 title="复制 Run ID"
-                className="-my-2 shrink-0 text-gray-500"
+                className="-my-2 shrink-0 text-muted-foreground"
               >
                 <Copy className="size-3.5" />
               </Button>
             </div>
-            <p className="mt-1 text-xs text-gray-400">创建于 {createdAtLabel}</p>
+            <p className="mt-1 text-xs text-muted-foreground">创建于 {createdAtLabel}</p>
           </div>
           <Button
             variant="outline"
@@ -281,20 +289,20 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
           </Button>
         </header>
 
-        <section className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-gray-200 bg-white md:grid-cols-3 lg:grid-cols-6">
+        <section className="mb-6 grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-card md:grid-cols-3 lg:grid-cols-6">
           {metricData.map((metric, index) => (
             <div
               key={metric.label}
               className={`min-w-0 px-4 py-4 sm:px-5 ${
-                index % 2 ? "border-l border-gray-100" : ""
-              } ${index >= 2 ? "border-t border-gray-100 md:border-t-0" : ""} ${
+                index % 2 ? "border-l border-border" : ""
+              } ${index >= 2 ? "border-t border-border md:border-t-0" : ""} ${
                 index >= 3 ? "md:border-t" : ""
               } ${
-                index > 0 ? "lg:border-l lg:border-gray-100" : ""
+                index > 0 ? "lg:border-l lg:border-border" : ""
               }`}
             >
-              <p className="text-xs font-medium text-gray-500">{metric.label}</p>
-              <p className="mt-1.5 truncate text-sm font-semibold text-gray-950" title={metric.value}>
+              <p className="text-xs font-medium text-muted-foreground">{metric.label}</p>
+              <p className="mt-1.5 truncate text-sm font-semibold text-foreground" title={metric.value}>
                 {metric.value}
               </p>
             </div>
@@ -303,14 +311,14 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="min-w-0 space-y-6">
-            <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-              <div className="border-b border-gray-100 px-4 py-3 sm:px-5">
-                <h2 className="text-sm font-semibold text-gray-900">输入与回答</h2>
+            <section className="overflow-hidden rounded-lg border border-border bg-card">
+              <div className="border-b border-border px-4 py-3 sm:px-5">
+                <h2 className="text-sm font-semibold text-foreground">输入与回答</h2>
               </div>
               <div className="space-y-5 p-4 sm:p-5">
                 <div>
-                  <p className="mb-2 text-xs font-medium text-gray-500">用户输入</p>
-                  <p className="whitespace-pre-wrap rounded-md bg-gray-50 p-3 text-sm leading-6 text-gray-800">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">用户输入</p>
+                  <p className="whitespace-pre-wrap rounded-md bg-muted/60 p-3 text-sm leading-6 text-foreground">
                     {run.input}
                   </p>
                 </div>
@@ -321,36 +329,36 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                   </div>
                 ) : null}
                 <div>
-                  <p className="mb-2 text-xs font-medium text-gray-500">最终回答</p>
-                  <p className="whitespace-pre-wrap text-sm leading-7 text-gray-800">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">最终回答</p>
+                  <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">
                     {run.finalOutput || finalStep?.content || "暂无最终回答"}
                   </p>
                 </div>
               </div>
             </section>
 
-            <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-              <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 sm:px-5">
-                <h2 className="text-sm font-semibold text-gray-900">执行步骤</h2>
-                <span className="text-xs tabular-nums text-gray-500">{visibleStepCount} 步</span>
+            <section className="overflow-hidden rounded-lg border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-5">
+                <h2 className="text-sm font-semibold text-foreground">执行步骤</h2>
+                <span className="text-xs tabular-nums text-muted-foreground">{visibleStepCount} 步</span>
               </div>
               <div className="p-4 sm:p-5">
                 {visibleStepCount === 0 ? (
-                  <p className="py-8 text-center text-sm text-gray-500">暂无执行步骤</p>
+                  <p className="py-8 text-center text-sm text-muted-foreground">暂无执行步骤</p>
                 ) : (
                   <ToolTimeline steps={steps} />
                 )}
               </div>
             </section>
             {run.attempts.length > 0 ? (
-              <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 sm:px-5">
-                  <h2 className="text-sm font-semibold text-gray-900">Token 尝试账本</h2>
-                  <span className="text-xs text-gray-500">{run.attempts.length} 次</span>
+              <section className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-5">
+                  <h2 className="text-sm font-semibold text-foreground">Token 尝试账本</h2>
+                  <span className="text-xs text-muted-foreground">{run.attempts.length} 次</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[58rem] text-left text-xs">
-                    <thead className="bg-gray-50 text-gray-500">
+                    <thead className="bg-muted/60 text-muted-foreground">
                       <tr>
                         <th className="px-4 py-2 font-medium">尝试</th>
                         <th className="px-4 py-2 font-medium">状态</th>
@@ -360,10 +368,10 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                         <th className="px-4 py-2 font-medium">说明</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100">
+                    <tbody className="divide-y divide-border">
                       {run.attempts.map(attempt => (
                         <tr key={attempt.id} className="align-top">
-                          <td className="px-4 py-3 font-medium text-gray-900">
+                          <td className="px-4 py-3 font-medium text-foreground">
                             #{attempt.attemptNumber}
                           </td>
                           <td className="px-4 py-3">
@@ -375,19 +383,19 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                                   : "已释放"}
                             </Badge>
                           </td>
-                          <td className="px-4 py-3 tabular-nums text-gray-700">
+                          <td className="px-4 py-3 tabular-nums text-muted-foreground">
                             {formatTokens(attempt.reservedTokens)} /{" "}
                             {formatTokens(attempt.totalTokens)} /{" "}
                             {formatTokens(attempt.countedTokens)}
                           </td>
-                          <td className="px-4 py-3 text-gray-700">
+                          <td className="px-4 py-3 text-muted-foreground">
                             {attempt.llmModel ?? attempt.llmProvider ?? "未记录"}
                           </td>
-                          <td className="px-4 py-3 text-gray-500">
+                          <td className="px-4 py-3 text-muted-foreground">
                             <p>{formatTimestamp(attempt.modelStartedAt)}</p>
                             <p className="mt-1">{formatTimestamp(attempt.settledAt)}</p>
                           </td>
-                          <td className="max-w-xs px-4 py-3 text-gray-500">
+                          <td className="max-w-xs px-4 py-3 text-muted-foreground">
                             {usageStateMeta[attempt.usageState].description}
                           </td>
                         </tr>
@@ -400,27 +408,27 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
           </div>
 
           <aside className="min-w-0 space-y-6">
-            <section className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
               <div className="flex items-center gap-2">
-                <Cpu className="size-4 text-gray-500" />
-                <h2 className="text-sm font-semibold text-gray-900">Token 用量</h2>
+                <Cpu className="size-4 text-muted-foreground" />
+                <h2 className="text-sm font-semibold text-foreground">Token 用量</h2>
               </div>
               <div className="mt-4 grid grid-cols-3 gap-3 text-center">
                 <div>
-                  <p className="text-[11px] text-gray-400">输入</p>
-                  <p className="mt-1 text-sm font-semibold tabular-nums text-gray-900">
+                  <p className="text-[11px] text-muted-foreground">输入</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums text-foreground">
                     {formatTokens(run.inputTokens)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-[11px] text-gray-400">输出</p>
-                  <p className="mt-1 text-sm font-semibold tabular-nums text-gray-900">
+                  <p className="text-[11px] text-muted-foreground">输出</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums text-foreground">
                     {formatTokens(run.outputTokens)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-[11px] text-gray-400">总计</p>
-                  <p className="mt-1 text-sm font-semibold tabular-nums text-gray-900">
+                  <p className="text-[11px] text-muted-foreground">总计</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums text-foreground">
                     {formatTokens(run.totalTokens)}
                   </p>
                 </div>
@@ -432,67 +440,67 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                 >
                   {usageStateMeta[run.usageState].label}
                 </Badge>
-                <p className="text-xs leading-5 text-gray-500">
+                <p className="text-xs leading-5 text-muted-foreground">
                   {usageStateMeta[run.usageState].description}
                 </p>
               </div>
-              <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-gray-100 pt-4 text-xs">
+              <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-4 text-xs">
                 <div>
-                  <dt className="text-gray-500">计入额度</dt>
-                  <dd className="mt-1 font-semibold tabular-nums text-gray-900">
+                  <dt className="text-muted-foreground">计入额度</dt>
+                  <dd className="mt-1 font-semibold tabular-nums text-foreground">
                     {formatTokens(run.countedTokens)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-gray-500">预留额度</dt>
-                  <dd className="mt-1 font-semibold tabular-nums text-gray-900">
+                  <dt className="text-muted-foreground">预留额度</dt>
+                  <dd className="mt-1 font-semibold tabular-nums text-foreground">
                     {formatTokens(run.reservedTokens)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-gray-500">日额度快照</dt>
-                  <dd className="mt-1 font-medium tabular-nums text-gray-900">
+                  <dt className="text-muted-foreground">日额度快照</dt>
+                  <dd className="mt-1 font-medium tabular-nums text-foreground">
                     {run.quotaLimitTokens === 0
                       ? "不限额"
                       : formatTokens(run.quotaLimitTokens)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-gray-500">UTC 日期</dt>
-                  <dd className="mt-1 font-medium text-gray-900">
+                  <dt className="text-muted-foreground">UTC 日期</dt>
+                  <dd className="mt-1 font-medium text-foreground">
                     {run.quotaBucketDate ?? "未记录"}
                   </dd>
                 </div>
               </dl>
-              <div className="mt-4 border-t border-gray-100 pt-4">
+              <div className="mt-4 border-t border-border pt-4">
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="text-gray-500">上下文窗口参考</span>
-                  <span className="font-medium tabular-nums text-gray-900">
+                  <span className="text-muted-foreground">上下文窗口参考</span>
+                  <span className="font-medium tabular-nums text-foreground">
                     {contextUsagePercent.toFixed(1)}%
                   </span>
                 </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-gray-100">
+                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-muted">
                   <div
                     className="h-full bg-emerald-500"
                     style={{ width: `${contextUsagePercent}%` }}
                   />
                 </div>
-                <p className="mt-2 text-right text-[11px] tabular-nums text-gray-400">
+                <p className="mt-2 text-right text-[11px] tabular-nums text-muted-foreground">
                   {formatTokens(run.totalTokens)} / {formatTokens(run.contextWindowTokens)}
                 </p>
               </div>
             </section>
 
-            <section className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
               <div className="flex items-center gap-2">
-                <Activity className="size-4 text-gray-500" />
-                <h2 className="text-sm font-semibold text-gray-900">链路追踪</h2>
+                <Activity className="size-4 text-muted-foreground" />
+                <h2 className="text-sm font-semibold text-foreground">链路追踪</h2>
               </div>
               <dl className="mt-4 space-y-4 text-sm">
                 <div>
-                  <dt className="text-xs text-gray-500">OpenTelemetry Trace ID</dt>
+                  <dt className="text-xs text-muted-foreground">OpenTelemetry Trace ID</dt>
                   <dd className="mt-1.5 flex min-w-0 items-center gap-1.5">
-                    <code className="min-w-0 break-all font-mono text-[11px] text-gray-800">
+                    <code className="min-w-0 break-all font-mono text-[11px] text-foreground">
                       {run.traceId ?? "未启用或未导出"}
                     </code>
                     {run.traceId ? (
@@ -511,22 +519,22 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-gray-500">执行 Span ID</dt>
-                  <dd className="mt-1 font-mono text-[11px] text-gray-800">
+                  <dt className="text-xs text-muted-foreground">执行 Span ID</dt>
+                  <dd className="mt-1 font-mono text-[11px] text-foreground">
                     {run.spanId ?? "未记录"}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-gray-500">OpenAI Agent Trace ID</dt>
-                  <dd className="mt-1 break-all font-mono text-[11px] text-gray-800">
+                  <dt className="text-xs text-muted-foreground">OpenAI Agent Trace ID</dt>
+                  <dd className="mt-1 break-all font-mono text-[11px] text-foreground">
                     {metadata.tracing?.traceId ?? "未启用"}
                   </dd>
                 </div>
               </dl>
             </section>
 
-            <section className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
-              <h2 className="text-sm font-semibold text-gray-900">结构化结果</h2>
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <h2 className="text-sm font-semibold text-foreground">结构化结果</h2>
               {structuredOutput.summary ? (
                 <div className="mt-4 space-y-4 text-sm">
                   <div className="flex flex-wrap gap-2">
@@ -535,11 +543,11 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                       {riskLabels[structuredOutput.riskLevel] ?? structuredOutput.riskLevel}
                     </Badge>
                   </div>
-                  <p className="font-medium leading-6 text-gray-900">
+                  <p className="font-medium leading-6 text-foreground">
                     {structuredOutput.summary}
                   </p>
                   {Array.isArray(structuredOutput.suggestedActions) ? (
-                    <ul className="space-y-2.5 text-gray-600">
+                    <ul className="space-y-2.5 text-muted-foreground">
                       {structuredOutput.suggestedActions.map((action: string, index: number) => (
                         <li key={index} className="flex gap-2 leading-5">
                           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
@@ -550,59 +558,59 @@ export default function AgentRunDetail({ params }: AgentRunDetailProps) {
                   ) : null}
                 </div>
               ) : (
-                <p className="mt-4 text-sm text-gray-500">暂无结构化结果</p>
+                <p className="mt-4 text-sm text-muted-foreground">暂无结构化结果</p>
               )}
             </section>
 
-            <section className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
               <div className="flex items-center gap-2">
-                <Clock3 className="size-4 text-gray-500" />
-                <h2 className="text-sm font-semibold text-gray-900">运行信息</h2>
+                <Clock3 className="size-4 text-muted-foreground" />
+                <h2 className="text-sm font-semibold text-foreground">运行信息</h2>
               </div>
-              <dl className="mt-4 divide-y divide-gray-100 text-sm">
+              <dl className="mt-4 divide-y divide-border text-sm">
                 <div className="flex items-start justify-between gap-4 py-3 first:pt-0">
-                  <dt className="text-gray-500">提供方</dt>
-                  <dd className="text-right font-medium text-gray-900">{run.llmProvider ?? "未记录"}</dd>
+                  <dt className="text-muted-foreground">提供方</dt>
+                  <dd className="text-right font-medium text-foreground">{run.llmProvider ?? "未记录"}</dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3">
-                  <dt className="text-gray-500">排队耗时</dt>
-                  <dd className="text-right font-medium text-gray-900">
+                  <dt className="text-muted-foreground">排队耗时</dt>
+                  <dd className="text-right font-medium text-foreground">
                     {formatDuration(queueDurationMs)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3">
-                  <dt className="text-gray-500">执行耗时</dt>
-                  <dd className="text-right font-medium text-gray-900">
+                  <dt className="text-muted-foreground">执行耗时</dt>
+                  <dd className="text-right font-medium text-foreground">
                     {formatDuration(executionDurationMs)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3">
-                  <dt className="text-gray-500">尝试次数</dt>
-                  <dd className="text-right font-medium text-gray-900">
+                  <dt className="text-muted-foreground">尝试次数</dt>
+                  <dd className="text-right font-medium text-foreground">
                     {Math.max(1, run.attemptCount ?? 0)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3">
-                  <dt className="text-gray-500">开始时间</dt>
-                  <dd className="text-right text-xs font-medium text-gray-900">
+                  <dt className="text-muted-foreground">开始时间</dt>
+                  <dd className="text-right text-xs font-medium text-foreground">
                     {formatTimestamp(run.startedAt)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3">
-                  <dt className="text-gray-500">建议接力</dt>
-                  <dd className="text-right font-medium text-gray-900">
+                  <dt className="text-muted-foreground">建议接力</dt>
+                  <dd className="text-right font-medium text-foreground">
                     {handoffEvaluation.recommendedAgent ?? "无"}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4 py-3 last:pb-0">
-                  <dt className="text-gray-500">完成时间</dt>
-                  <dd className="text-right font-medium text-gray-900">{completedAtLabel}</dd>
+                  <dt className="text-muted-foreground">完成时间</dt>
+                  <dd className="text-right font-medium text-foreground">{completedAtLabel}</dd>
                 </div>
               </dl>
             </section>
           </aside>
         </div>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

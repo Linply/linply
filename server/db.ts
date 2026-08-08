@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   eq,
   and,
@@ -21,6 +21,10 @@ import {
   authAccounts,
   sessions,
   oauthStates,
+  workspaces,
+  planRequests,
+  workspaceChannels,
+  channelContacts,
   tickets,
   knowledgeBase,
   knowledgeDocuments,
@@ -43,6 +47,10 @@ import type { KnowledgeSecurityFinding } from "./knowledge/security";
 import { createEmbedding, isEmbeddingEnabled } from "./_core/embeddings";
 import { logWarn } from "./_core/observability";
 import { ENV } from "./_core/env";
+import {
+  PLANS,
+  type WorkspacePlan,
+} from "../shared/plans";
 import {
   getTokenSettlement,
   shouldRejectTokenReservation,
@@ -143,21 +151,6 @@ export async function getUserByEmail(email: string) {
     .from(users)
     .where(eq(users.email, email))
     .limit(1);
-  return user;
-}
-
-export async function updateUserRole(id: number, role: "user" | "admin") {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  const [user] = await db
-    .update(users)
-    .set({
-      role,
-      updatedAt: new Date(),
-    })
-    .where(eq(users.id, id))
-    .returning();
   return user;
 }
 
@@ -343,10 +336,604 @@ export async function findOrCreateOAuthUser(data: {
   });
 }
 
+// ============ Workspaces ============
+
+/** URL-safe random identifier for public share links and webhook paths. */
+const createOpaqueKey = (bytes = 16) => randomBytes(bytes).toString("hex");
+
+export type ChannelProvider = "web" | "telegram" | "slack" | "feishu";
+export type ChannelStatus = "pending" | "connected" | "error" | "disabled";
+export type OnboardingStep =
+  | "profile"
+  | "knowledge"
+  | "preview"
+  | "channel"
+  | "done";
+
+export async function getWorkspaceByOwner(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.ownerUserId, userId))
+    .limit(1);
+  return workspace ?? null;
+}
+
+export async function getWorkspaceById(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, id))
+    .limit(1);
+  return workspace ?? null;
+}
+
+export async function getWorkspaceByPublicKey(publicKey: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.publicKey, publicKey))
+    .limit(1);
+  return workspace ?? null;
+}
+
+/**
+ * Creates the caller's personal workspace together with its built-in `web`
+ * channel. Concurrent first requests from the same account race here, so the
+ * unique index on ownerUserId decides the winner and the loser re-reads.
+ */
+export async function createWorkspaceForOwner(data: {
+  userId: number;
+  name: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async tx => {
+    const [workspace] = await tx
+      .insert(workspaces)
+      .values({
+        ownerUserId: data.userId,
+        name: data.name,
+        publicKey: createOpaqueKey(12),
+      })
+      .onConflictDoNothing({ target: workspaces.ownerUserId })
+      .returning();
+
+    if (!workspace) {
+      const [existing] = await tx
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.ownerUserId, data.userId))
+        .limit(1);
+      if (!existing) throw new Error("Failed to create workspace");
+      return existing;
+    }
+
+    await tx.insert(workspaceChannels).values({
+      workspaceId: workspace.id,
+      provider: "web",
+      status: "connected",
+      displayName: "分享链接",
+      webhookSecret: createOpaqueKey(16),
+    });
+
+    return workspace;
+  });
+}
+
+export async function updateWorkspace(
+  id: number,
+  data: Partial<{
+    name: string;
+    agentName: string;
+    agentTone: string;
+    greeting: string | null;
+    fallbackReply: string | null;
+    businessContext: string | null;
+    publicChatEnabled: boolean;
+    onboardingStep: OnboardingStep;
+    onboardingCompletedAt: Date | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [workspace] = await db
+    .update(workspaces)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(workspaces.id, id))
+    .returning();
+  return workspace ?? null;
+}
+
+/** Counts driving the setup checklist and the workspace overview cards. */
+export async function getWorkspaceOverview(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [knowledge] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      searchable:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'approved' and ${knowledgeBase.embeddingStatus} = 'completed')`.mapWith(
+          Number
+        ),
+      quarantined:
+        sql<number>`count(*) filter (where ${knowledgeBase.securityStatus} = 'quarantined')`.mapWith(
+          Number
+        ),
+    })
+    .from(knowledgeBase)
+    .where(eq(knowledgeBase.workspaceId, workspaceId));
+
+  const [ticketCounts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      open: sql<number>`count(*) filter (where ${tickets.status} in ('pending','in_progress'))`.mapWith(
+        Number
+      ),
+    })
+    .from(tickets)
+    .where(eq(tickets.workspaceId, workspaceId));
+
+  const [contactCounts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      activeLast7d:
+        sql<number>`count(*) filter (where ${channelContacts.lastMessageAt} > now() - interval '7 days')`.mapWith(
+          Number
+        ),
+    })
+    .from(channelContacts)
+    .where(eq(channelContacts.workspaceId, workspaceId));
+
+  const [messageCounts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      last7d:
+        sql<number>`count(*) filter (where ${chatMessages.createdAt} > now() - interval '7 days')`.mapWith(
+          Number
+        ),
+    })
+    .from(chatMessages)
+    .where(eq(chatMessages.workspaceId, workspaceId));
+
+  const [connectedChannels] = await db
+    .select({ total: sql<number>`count(*)`.mapWith(Number) })
+    .from(workspaceChannels)
+    .where(
+      and(
+        eq(workspaceChannels.workspaceId, workspaceId),
+        eq(workspaceChannels.status, "connected"),
+        sql`${workspaceChannels.provider} <> 'web'`
+      )
+    );
+
+  return {
+    knowledgeTotal: knowledge?.total ?? 0,
+    knowledgeSearchable: knowledge?.searchable ?? 0,
+    knowledgeQuarantined: knowledge?.quarantined ?? 0,
+    ticketsTotal: ticketCounts?.total ?? 0,
+    ticketsOpen: ticketCounts?.open ?? 0,
+    contactsTotal: contactCounts?.total ?? 0,
+    contactsActive: contactCounts?.activeLast7d ?? 0,
+    messagesTotal: messageCounts?.total ?? 0,
+    messagesLast7d: messageCounts?.last7d ?? 0,
+    connectedChannels: connectedChannels?.total ?? 0,
+  };
+}
+
+// ============ Plans ============
+
+/** Current consumption for every metered limit, for gating and the pricing page. */
+export async function getWorkspacePlanUsage(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [knowledge] = await db
+    .select({ total: sql<number>`count(*)`.mapWith(Number) })
+    .from(knowledgeBase)
+    .where(eq(knowledgeBase.workspaceId, workspaceId));
+
+  const [channels] = await db
+    .select({ total: sql<number>`count(*)`.mapWith(Number) })
+    .from(workspaceChannels)
+    .where(
+      and(
+        eq(workspaceChannels.workspaceId, workspaceId),
+        eq(workspaceChannels.status, "connected"),
+        // The built-in share link ships with every plan and is never metered.
+        sql`${workspaceChannels.provider} <> 'web'`
+      )
+    );
+
+  const [contacts] = await db
+    .select({ total: sql<number>`count(*)`.mapWith(Number) })
+    .from(channelContacts)
+    .where(
+      and(
+        eq(channelContacts.workspaceId, workspaceId),
+        sql`${channelContacts.createdAt} > now() - interval '30 days'`
+      )
+    );
+
+  return {
+    knowledgeEntries: knowledge?.total ?? 0,
+    connectedChannels: channels?.total ?? 0,
+    monthlyContacts: contacts?.total ?? 0,
+  };
+}
+
+export async function setWorkspacePlan(
+  workspaceId: number,
+  plan: WorkspacePlan
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [workspace] = await db
+    .update(workspaces)
+    .set({
+      plan,
+      planActivatedAt: plan === "free" ? null : new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  return workspace ?? null;
+}
+
+export async function getOpenPlanRequest(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [request] = await db
+    .select()
+    .from(planRequests)
+    .where(
+      and(
+        eq(planRequests.workspaceId, workspaceId),
+        eq(planRequests.status, "pending")
+      )
+    )
+    .limit(1);
+  return request ?? null;
+}
+
+/**
+ * Records an upgrade intent. The partial unique index makes repeated clicks
+ * idempotent: a second pending request for the same workspace updates the
+ * target plan instead of stacking rows.
+ */
+export async function createPlanRequest(data: {
+  workspaceId: number;
+  requestedBy: number;
+  fromPlan: WorkspacePlan;
+  toPlan: WorkspacePlan;
+  note?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [request] = await db
+    .insert(planRequests)
+    .values({
+      workspaceId: data.workspaceId,
+      requestedBy: data.requestedBy,
+      fromPlan: data.fromPlan,
+      toPlan: data.toPlan,
+      note: data.note ?? null,
+    })
+    .onConflictDoUpdate({
+      target: planRequests.workspaceId,
+      targetWhere: sql`status = 'pending'`,
+      set: {
+        toPlan: data.toPlan,
+        fromPlan: data.fromPlan,
+        note: data.note ?? null,
+        createdAt: new Date(),
+      },
+    })
+    .returning();
+
+  if (!request) throw new Error("Failed to record plan request");
+  return request;
+}
+
+export async function cancelPlanRequest(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .update(planRequests)
+    .set({ status: "cancelled", resolvedAt: new Date() })
+    .where(
+      and(
+        eq(planRequests.workspaceId, workspaceId),
+        eq(planRequests.status, "pending")
+      )
+    );
+}
+
+// ============ Workspace Channels ============
+
+export async function listWorkspaceChannels(workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select()
+    .from(workspaceChannels)
+    .where(eq(workspaceChannels.workspaceId, workspaceId))
+    .orderBy(workspaceChannels.id);
+}
+
+export async function getWorkspaceChannel(
+  workspaceId: number,
+  provider: ChannelProvider
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [channel] = await db
+    .select()
+    .from(workspaceChannels)
+    .where(
+      and(
+        eq(workspaceChannels.workspaceId, workspaceId),
+        eq(workspaceChannels.provider, provider)
+      )
+    )
+    .limit(1);
+  return channel ?? null;
+}
+
+export async function getChannelByWebhookSecret(secret: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [channel] = await db
+    .select()
+    .from(workspaceChannels)
+    .where(eq(workspaceChannels.webhookSecret, secret))
+    .limit(1);
+  return channel ?? null;
+}
+
+export async function listChannelsByProvider(
+  provider: ChannelProvider,
+  status?: ChannelStatus
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const conditions = [eq(workspaceChannels.provider, provider)];
+  if (status) conditions.push(eq(workspaceChannels.status, status));
+  return db
+    .select()
+    .from(workspaceChannels)
+    .where(and(...conditions))
+    .orderBy(workspaceChannels.id);
+}
+
+/** Creates the provider row on first connect, then overwrites its settings. */
+export async function upsertWorkspaceChannel(data: {
+  workspaceId: number;
+  provider: ChannelProvider;
+  status: ChannelStatus;
+  displayName?: string | null;
+  externalId?: string | null;
+  credentials?: Record<string, string>;
+  deliveryMode?: string;
+  autoReply?: boolean;
+  lastError?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [channel] = await db
+    .insert(workspaceChannels)
+    .values({
+      workspaceId: data.workspaceId,
+      provider: data.provider,
+      status: data.status,
+      displayName: data.displayName ?? null,
+      externalId: data.externalId ?? null,
+      credentials: data.credentials ?? {},
+      webhookSecret: createOpaqueKey(16),
+      deliveryMode: data.deliveryMode ?? "webhook",
+      autoReply: data.autoReply ?? true,
+      lastError: data.lastError ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [workspaceChannels.workspaceId, workspaceChannels.provider],
+      set: {
+        status: data.status,
+        displayName: data.displayName ?? null,
+        externalId: data.externalId ?? null,
+        ...(data.credentials ? { credentials: data.credentials } : {}),
+        ...(data.deliveryMode ? { deliveryMode: data.deliveryMode } : {}),
+        ...(data.autoReply === undefined ? {} : { autoReply: data.autoReply }),
+        lastError: data.lastError ?? null,
+        pollOffset: 0,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  if (!channel) throw new Error("Failed to save channel connection");
+  return channel;
+}
+
+export async function updateWorkspaceChannel(
+  id: number,
+  data: Partial<{
+    status: ChannelStatus;
+    displayName: string | null;
+    externalId: string | null;
+    credentials: Record<string, string>;
+    deliveryMode: string;
+    pollOffset: number;
+    autoReply: boolean;
+    lastEventAt: Date | null;
+    lastError: string | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [channel] = await db
+    .update(workspaceChannels)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(workspaceChannels.id, id))
+    .returning();
+  return channel ?? null;
+}
+
+export async function deleteWorkspaceChannel(
+  workspaceId: number,
+  provider: ChannelProvider
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .delete(workspaceChannels)
+    .where(
+      and(
+        eq(workspaceChannels.workspaceId, workspaceId),
+        eq(workspaceChannels.provider, provider)
+      )
+    );
+}
+
+// ============ Channel Contacts ============
+
+export async function upsertChannelContact(data: {
+  workspaceId: number;
+  channelId: number;
+  provider: ChannelProvider;
+  externalId: string;
+  externalChatId?: string | null;
+  displayName?: string | null;
+  username?: string | null;
+  locale?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const [contact] = await db
+    .insert(channelContacts)
+    .values({
+      workspaceId: data.workspaceId,
+      channelId: data.channelId,
+      provider: data.provider,
+      externalId: data.externalId,
+      externalChatId: data.externalChatId ?? null,
+      displayName: data.displayName ?? null,
+      username: data.username ?? null,
+      locale: data.locale ?? null,
+      lastMessageAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [channelContacts.channelId, channelContacts.externalId],
+      set: {
+        externalChatId: data.externalChatId ?? null,
+        displayName: data.displayName ?? null,
+        username: data.username ?? null,
+        locale: data.locale ?? null,
+        lastMessageAt: new Date(),
+        messageCount: sql`${channelContacts.messageCount} + 1`,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  if (!contact) throw new Error("Failed to save channel contact");
+  return contact;
+}
+
+export async function findChannelContact(
+  channelId: number,
+  externalId: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [contact] = await db
+    .select()
+    .from(channelContacts)
+    .where(
+      and(
+        eq(channelContacts.channelId, channelId),
+        eq(channelContacts.externalId, externalId)
+      )
+    )
+    .limit(1);
+  return contact ?? null;
+}
+
+export async function getChannelContactById(
+  id: number,
+  workspaceId?: number
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const conditions = [eq(channelContacts.id, id)];
+  if (workspaceId !== undefined) {
+    conditions.push(eq(channelContacts.workspaceId, workspaceId));
+  }
+  const [contact] = await db
+    .select()
+    .from(channelContacts)
+    .where(and(...conditions))
+    .limit(1);
+  return contact ?? null;
+}
+
+export async function listWorkspaceContacts(
+  workspaceId: number,
+  limit = 50
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .select({
+      id: channelContacts.id,
+      provider: channelContacts.provider,
+      channelId: channelContacts.channelId,
+      displayName: channelContacts.displayName,
+      username: channelContacts.username,
+      messageCount: channelContacts.messageCount,
+      lastMessageAt: channelContacts.lastMessageAt,
+      createdAt: channelContacts.createdAt,
+      lastMessage: sql<string | null>`(
+        select ${chatMessages.content} from ${chatMessages}
+        where ${chatMessages.contactId} = ${channelContacts.id}
+        order by ${chatMessages.id} desc limit 1
+      )`,
+    })
+    .from(channelContacts)
+    .where(eq(channelContacts.workspaceId, workspaceId))
+    .orderBy(desc(channelContacts.lastMessageAt))
+    .limit(limit);
+}
+
+export async function getContactMessages(contactId: number, limit = 100) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.contactId, contactId))
+    .orderBy(desc(chatMessages.id))
+    .limit(limit);
+  return rows.reverse();
+}
+
 // ============ Tickets ============
 
 export async function createTicket(data: {
+  workspaceId: number;
   userId: number;
+  contactId?: number | null;
+  channelId?: number | null;
   title: string;
   description: string;
   priority?: "low" | "medium" | "high" | "urgent";
@@ -357,7 +944,10 @@ export async function createTicket(data: {
   const result = await db
     .insert(tickets)
     .values({
+      workspaceId: data.workspaceId,
       userId: data.userId,
+      contactId: data.contactId ?? null,
+      channelId: data.channelId ?? null,
       title: data.title,
       description: data.description,
       priority: data.priority || "medium",
@@ -380,6 +970,8 @@ export async function getTicketById(ticketId: number) {
 }
 
 export async function listTickets(filters?: {
+  workspaceId?: number;
+  contactId?: number;
   userId?: number;
   status?: string;
   priority?: string;
@@ -392,6 +984,12 @@ export async function listTickets(filters?: {
 
   const conditions = [];
 
+  if (filters?.workspaceId !== undefined) {
+    conditions.push(eq(tickets.workspaceId, filters.workspaceId));
+  }
+  if (filters?.contactId !== undefined) {
+    conditions.push(eq(tickets.contactId, filters.contactId));
+  }
   if (filters?.userId) {
     conditions.push(eq(tickets.userId, filters.userId));
   }
@@ -465,6 +1063,7 @@ export const isKnowledgeEntrySearchable = (entry: {
   entry.embeddingStatus === "completed";
 
 export async function addKnowledgeEntry(data: {
+  workspaceId: number;
   title: string;
   content: string;
   category: string;
@@ -483,6 +1082,7 @@ export async function addKnowledgeEntry(data: {
     const [entry] = await tx
       .insert(knowledgeBase)
       .values({
+        workspaceId: data.workspaceId,
         title: data.title,
         content: data.content,
         category: data.category,
@@ -519,7 +1119,10 @@ export async function addKnowledgeEntry(data: {
   });
 }
 
-export async function getKnowledgeByCategory(category: string) {
+export async function getKnowledgeByCategory(
+  workspaceId: number,
+  category: string
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -528,41 +1131,51 @@ export async function getKnowledgeByCategory(category: string) {
     .from(knowledgeBase)
     .where(
       and(
+        eq(knowledgeBase.workspaceId, workspaceId),
         eq(knowledgeBase.category, category),
         searchableKnowledgeCondition()
       )
     );
 }
 
-export async function listKnowledgeEntries(filters?: {
-  securityStatus?: KnowledgeSecurityStatus;
-}) {
+export async function listKnowledgeEntries(
+  workspaceId: number,
+  filters?: {
+    securityStatus?: KnowledgeSecurityStatus;
+  }
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  const conditions = [eq(knowledgeBase.workspaceId, workspaceId)];
   if (filters?.securityStatus) {
-    return db
-      .select()
-      .from(knowledgeBase)
-      .where(eq(knowledgeBase.securityStatus, filters.securityStatus));
+    conditions.push(eq(knowledgeBase.securityStatus, filters.securityStatus));
   }
-  return db.select().from(knowledgeBase);
+  return db
+    .select()
+    .from(knowledgeBase)
+    .where(and(...conditions));
 }
 
-export async function getKnowledgeEntryById(id: number) {
+export async function getKnowledgeEntryById(id: number, workspaceId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+
+  const conditions = [eq(knowledgeBase.id, id)];
+  if (workspaceId !== undefined) {
+    conditions.push(eq(knowledgeBase.workspaceId, workspaceId));
+  }
 
   const result = await db
     .select()
     .from(knowledgeBase)
-    .where(eq(knowledgeBase.id, id))
+    .where(and(...conditions))
     .limit(1);
 
   return result.length > 0 ? result[0] : null;
 }
 
-export async function getKnowledgeByIds(ids: number[]) {
+export async function getKnowledgeByIds(workspaceId: number, ids: number[]) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -574,6 +1187,7 @@ export async function getKnowledgeByIds(ids: number[]) {
     .from(knowledgeBase)
     .where(
       and(
+        eq(knowledgeBase.workspaceId, workspaceId),
         inArray(knowledgeBase.id, uniqueIds),
         searchableKnowledgeCondition()
       )
@@ -761,6 +1375,7 @@ export async function applyKnowledgeSecurityDecision(data: {
 // ============ Knowledge Documents（上传文档） ============
 
 export async function createKnowledgeDocument(data: {
+  workspaceId: number;
   filename: string;
   fileType: string;
   uploadedBy?: number;
@@ -776,6 +1391,7 @@ export async function createKnowledgeDocument(data: {
   const result = await db
     .insert(knowledgeDocuments)
     .values({
+      workspaceId: data.workspaceId,
       filename: data.filename,
       fileType: data.fileType,
       status: data.status ?? "parsing",
@@ -871,13 +1487,14 @@ export async function listExpiredKnowledgeUploadSessions(
     .limit(limit);
 }
 
-export async function listKnowledgeDocuments() {
+export async function listKnowledgeDocuments(workspaceId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const docs = await db
     .select()
     .from(knowledgeDocuments)
+    .where(eq(knowledgeDocuments.workspaceId, workspaceId))
     .orderBy(desc(knowledgeDocuments.createdAt));
 
   const counts = await db
@@ -893,7 +1510,12 @@ export async function listKnowledgeDocuments() {
         ),
     })
     .from(knowledgeBase)
-    .where(isNotNull(knowledgeBase.documentId))
+    .where(
+      and(
+        eq(knowledgeBase.workspaceId, workspaceId),
+        isNotNull(knowledgeBase.documentId)
+      )
+    )
     .groupBy(knowledgeBase.documentId);
 
   const countMap = new Map(counts.map(c => [c.documentId, c]));
@@ -906,6 +1528,7 @@ export async function listKnowledgeDocuments() {
 }
 
 export async function addKnowledgeEntriesBatch(
+  workspaceId: number,
   documentId: number,
   entries: Array<{
     title: string;
@@ -930,6 +1553,7 @@ export async function addKnowledgeEntriesBatch(
       .insert(knowledgeBase)
       .values(
         entries.map(entry => ({
+          workspaceId,
           title: entry.title,
           content: entry.content,
           category: entry.category,
@@ -1055,6 +1679,7 @@ export const CONFLICT_SIMILARITY_THRESHOLD = 0.88;
 export async function detectEntryConflict(
   entry: {
     id: number;
+    workspaceId: number;
     title: string;
     documentId: number | null;
     embedding: number[] | null;
@@ -1064,6 +1689,7 @@ export async function detectEntryConflict(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
+  const sameWorkspace = eq(knowledgeBase.workspaceId, entry.workspaceId);
   const notSameDoc =
     entry.documentId == null
       ? sql`true`
@@ -1078,6 +1704,7 @@ export async function detectEntryConflict(
       .from(knowledgeBase)
       .where(
         and(
+          sameWorkspace,
           isNotNull(knowledgeBase.embedding),
           searchableKnowledgeCondition(),
           notSelf,
@@ -1102,6 +1729,7 @@ export async function detectEntryConflict(
     .from(knowledgeBase)
     .where(
       and(
+        sameWorkspace,
         notSelf,
         notSameDoc,
         searchableKnowledgeCondition(),
@@ -1168,14 +1796,23 @@ export async function deleteKnowledgeDocument(id: number) {
   });
 }
 
-async function fallbackSearchKnowledge(query: string, limit: number) {
+async function fallbackSearchKnowledge(
+  workspaceId: number,
+  query: string,
+  limit: number
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const entries = await db
     .select()
     .from(knowledgeBase)
-    .where(searchableKnowledgeCondition());
+    .where(
+      and(
+        eq(knowledgeBase.workspaceId, workspaceId),
+        searchableKnowledgeCondition()
+      )
+    );
   const ranked = rankKnowledgeEntriesByKeyword(query, entries, limit);
   if (ranked.length > 0) return ranked;
 
@@ -1184,6 +1821,7 @@ async function fallbackSearchKnowledge(query: string, limit: number) {
     .from(knowledgeBase)
     .where(
       and(
+        eq(knowledgeBase.workspaceId, workspaceId),
         like(knowledgeBase.title, `%${query}%`),
         searchableKnowledgeCondition()
       )
@@ -1191,8 +1829,12 @@ async function fallbackSearchKnowledge(query: string, limit: number) {
     .limit(limit);
 }
 
-export async function searchKnowledgeByKeyword(query: string, limit = 5) {
-  return fallbackSearchKnowledge(query, limit);
+export async function searchKnowledgeByKeyword(
+  workspaceId: number,
+  query: string,
+  limit = 5
+) {
+  return fallbackSearchKnowledge(workspaceId, query, limit);
 }
 
 type KeywordSearchEntry = {
@@ -1312,6 +1954,7 @@ const keywordRetrieval = (
 });
 
 export async function searchKnowledgeWithMeta(
+  workspaceId: number,
   query: string,
   limit = 5
 ): Promise<KnowledgeSearchResult> {
@@ -1320,7 +1963,7 @@ export async function searchKnowledgeWithMeta(
 
   if (!isEmbeddingEnabled()) {
     return {
-      entries: await fallbackSearchKnowledge(query, limit),
+      entries: await fallbackSearchKnowledge(workspaceId, query, limit),
       retrieval: keywordRetrieval("embedding_disabled"),
     };
   }
@@ -1333,6 +1976,7 @@ export async function searchKnowledgeWithMeta(
       .from(knowledgeBase)
       .where(
         and(
+          eq(knowledgeBase.workspaceId, workspaceId),
           isNotNull(knowledgeBase.embedding),
           searchableKnowledgeCondition()
         )
@@ -1345,7 +1989,7 @@ export async function searchKnowledgeWithMeta(
     }
 
     return {
-      entries: await fallbackSearchKnowledge(query, limit),
+      entries: await fallbackSearchKnowledge(workspaceId, query, limit),
       retrieval: keywordRetrieval("no_vector_results"),
     };
   } catch (error) {
@@ -1353,19 +1997,27 @@ export async function searchKnowledgeWithMeta(
       error,
     });
     return {
-      entries: await fallbackSearchKnowledge(query, limit),
+      entries: await fallbackSearchKnowledge(workspaceId, query, limit),
       retrieval: keywordRetrieval("vector_error"),
     };
   }
 }
 
 /** Legacy array-only API for non-chat consumers such as MCP. */
-export async function searchKnowledge(query: string, limit = 5) {
-  const result = await searchKnowledgeWithMeta(query, limit);
+export async function searchKnowledge(
+  workspaceId: number,
+  query: string,
+  limit = 5
+) {
+  const result = await searchKnowledgeWithMeta(workspaceId, query, limit);
   return result.entries;
 }
 
-export async function debugSearchKnowledge(query: string, limit = 5) {
+export async function debugSearchKnowledge(
+  workspaceId: number,
+  query: string,
+  limit = 5
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -1373,7 +2025,12 @@ export async function debugSearchKnowledge(query: string, limit = 5) {
     const entries = await db
       .select()
       .from(knowledgeBase)
-      .where(searchableKnowledgeCondition());
+      .where(
+        and(
+          eq(knowledgeBase.workspaceId, workspaceId),
+          searchableKnowledgeCondition()
+        )
+      );
     const scored = scoreKnowledgeEntriesByKeyword(query, entries, limit);
 
     return {
@@ -1418,6 +2075,7 @@ export async function debugSearchKnowledge(query: string, limit = 5) {
       .from(knowledgeBase)
       .where(
         and(
+          eq(knowledgeBase.workspaceId, workspaceId),
           isNotNull(knowledgeBase.embedding),
           searchableKnowledgeCondition()
         )
@@ -1454,8 +2112,11 @@ export async function debugSearchKnowledge(query: string, limit = 5) {
 // ============ Chat Messages ============
 
 export async function saveChatMessage(data: {
+  workspaceId: number;
   ticketId?: number;
   userId: number;
+  contactId?: number | null;
+  channelId?: number | null;
   role: "user" | "assistant";
   content: string;
   relatedKnowledgeIds?: number[];
@@ -1472,8 +2133,11 @@ export async function saveChatMessage(data: {
   if (!db) throw new Error("Database not available");
 
   const query = db.insert(chatMessages).values({
+    workspaceId: data.workspaceId,
     ticketId: data.ticketId,
     userId: data.userId,
+    contactId: data.contactId ?? null,
+    channelId: data.channelId ?? null,
     role: data.role,
     content: data.content,
     relatedKnowledgeIds: data.relatedKnowledgeIds ?? null,
@@ -1486,61 +2150,79 @@ export async function saveChatMessage(data: {
   return data.agentRunId ? query.onConflictDoNothing() : query;
 }
 
-export async function getChatHistory(
-  userId: number,
-  ticketId?: number,
-  limit = 50
-) {
+/**
+ * A conversation thread is identified by workspace plus who is on the other end:
+ * `contactId` set means an external visitor from a channel, `contactId` unset
+ * means the workspace owner's own console thread. The two never mix.
+ */
+export type ChatThreadScope = {
+  workspaceId: number;
+  contactId?: number | null;
+  ticketId?: number;
+};
+
+const chatThreadConditions = (scope: ChatThreadScope) => {
+  const conditions = [eq(chatMessages.workspaceId, scope.workspaceId)];
+  conditions.push(
+    scope.contactId == null
+      ? isNull(chatMessages.contactId)
+      : eq(chatMessages.contactId, scope.contactId)
+  );
+  if (scope.ticketId) {
+    conditions.push(eq(chatMessages.ticketId, scope.ticketId));
+  }
+  return conditions;
+};
+
+export async function getChatHistory(scope: ChatThreadScope, limit = 50) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-
-  const conditions = [eq(chatMessages.userId, userId)];
-  if (ticketId) {
-    conditions.push(eq(chatMessages.ticketId, ticketId));
-  }
 
   const rows = await db
     .select()
     .from(chatMessages)
-    .where(and(...conditions))
-    .orderBy(desc(chatMessages.createdAt))
+    .where(and(...chatThreadConditions(scope)))
+    .orderBy(desc(chatMessages.id))
     .limit(limit);
 
   return rows.reverse();
 }
 
-export async function getTicketChatHistory(ticketId: number, limit = 100) {
+export async function getTicketChatHistory(
+  workspaceId: number,
+  ticketId: number,
+  limit = 100
+) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const rows = await db
     .select()
     .from(chatMessages)
-    .where(eq(chatMessages.ticketId, ticketId))
-    .orderBy(desc(chatMessages.createdAt))
+    .where(
+      and(
+        eq(chatMessages.workspaceId, workspaceId),
+        eq(chatMessages.ticketId, ticketId)
+      )
+    )
+    .orderBy(desc(chatMessages.id))
     .limit(limit);
 
   return rows.reverse();
 }
 
 export async function getRecentChatHistory(
-  userId: number,
-  ticketId?: number,
+  scope: ChatThreadScope,
   limit = 10
 ) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const conditions = [eq(chatMessages.userId, userId)];
-  if (ticketId) {
-    conditions.push(eq(chatMessages.ticketId, ticketId));
-  }
-
   const rows = await db
     .select()
     .from(chatMessages)
-    .where(and(...conditions))
-    .orderBy(desc(chatMessages.createdAt))
+    .where(and(...chatThreadConditions(scope)))
+    .orderBy(desc(chatMessages.id))
     .limit(limit);
 
   return rows.reverse();
@@ -1562,6 +2244,22 @@ export type AgentRunStepType =
   | "tool_result"
   | "final"
   | "error";
+
+/**
+ * The plan sets the daily token allowance. `AGENT_DAILY_TOKEN_QUOTA` acts as a
+ * hard ceiling on top of it — a self-hosted operator can cap everyone without
+ * having to redefine the plan catalog — rather than replacing the plan, so
+ * plans still differentiate below that ceiling. 0 means "no limit" on both
+ * sides, which is how the quota code already reads it.
+ */
+export const resolvePlanDailyTokens = (plan: WorkspacePlan) => {
+  const planLimit = PLANS[plan].limits.dailyTokens;
+  const planTokens = Number.isFinite(planLimit) ? planLimit : 0;
+  const envCeiling = ENV.agentDailyTokenQuota;
+  if (envCeiling <= 0) return planTokens;
+  if (planTokens <= 0) return envCeiling;
+  return Math.min(planTokens, envCeiling);
+};
 
 const quotaSnapshotFromBucket = (input: {
   bucketDate: string;
@@ -1669,8 +2367,11 @@ const reserveAgentRunAttempt = async (
 };
 
 export async function createAgentRun(data: {
+  workspaceId: number;
   userId: number;
-  userRole?: "user" | "admin";
+  plan?: WorkspacePlan;
+  contactId?: number | null;
+  channelId?: number | null;
   ticketId?: number;
   input: string;
   status?: AgentRunStatus;
@@ -1686,15 +2387,18 @@ export async function createAgentRun(data: {
 
   return db.transaction(async tx => {
     const runId = randomUUID();
-    const quotaLimitTokens = ENV.agentDailyTokenQuota;
+    const quotaLimitTokens = resolvePlanDailyTokens(data.plan ?? "free");
     const quotaEnforced = ENV.agentTokenQuotaEnforcement;
-    const quotaAdminExempt =
-      ENV.agentTokenQuotaAdminExempt && data.userRole === "admin";
+    // No cross-workspace administrator exists, so nobody is exempt from quota.
+    const quotaAdminExempt = false;
     const [created] = await tx
       .insert(agentRuns)
       .values({
         id: runId,
+        workspaceId: data.workspaceId,
         userId: data.userId,
+        contactId: data.contactId ?? null,
+        channelId: data.channelId ?? null,
         ticketId: data.ticketId,
         input: data.input,
         status: data.status ?? "queued",
@@ -1821,7 +2525,8 @@ export async function getAgentRunById(id: string) {
   return result.length > 0 ? result[0] : null;
 }
 
-export async function listActiveAgentRunsForUser(userId: number) {
+/** Console-side resume list: only the owner's own threads, not channel traffic. */
+export async function listActiveAgentRunsForWorkspace(workspaceId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -1836,7 +2541,8 @@ export async function listActiveAgentRunsForUser(userId: number) {
     .from(agentRuns)
     .where(
       and(
-        eq(agentRuns.userId, userId),
+        eq(agentRuns.workspaceId, workspaceId),
+        isNull(agentRuns.contactId),
         inArray(agentRuns.status, [
           "queued",
           "planning",
@@ -1871,7 +2577,7 @@ export async function getAgentRunAttempts(runId: string) {
 
 export async function getTokenQuota(
   userId: number,
-  userRole?: "user" | "admin"
+  plan: WorkspacePlan = "free"
 ): Promise<TokenQuotaSnapshot> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -1891,11 +2597,11 @@ export async function getTokenQuota(
     .limit(1);
   return quotaSnapshotFromBucket({
     bucketDate,
-    quotaLimitTokens: ENV.agentDailyTokenQuota,
+    quotaLimitTokens: resolvePlanDailyTokens(plan),
     reservedTokens: bucket?.reservedTokens ?? 0,
     usedTokens: bucket?.usedTokens ?? 0,
     enforced: ENV.agentTokenQuotaEnforcement,
-    adminExempt: ENV.agentTokenQuotaAdminExempt && userRole === "admin",
+    adminExempt: false,
   });
 }
 
@@ -2113,18 +2819,32 @@ export async function finalizeFailedAgentRun(data: {
     const usageState = await settleAgentRunAttemptInTransaction(tx, data);
     if (!usageState) return false;
     if (data.assistantMessage) {
-      await tx
-        .insert(chatMessages)
-        .values({
-          ticketId: data.assistantMessage.ticketId,
-          userId: data.assistantMessage.userId,
-          role: "assistant",
-          content: data.assistantMessage.content,
-          agentRunId: data.runId,
-          llmProvider: data.assistantMessage.llmProvider,
-          llmModel: data.assistantMessage.llmModel,
+      const [run] = await tx
+        .select({
+          workspaceId: agentRuns.workspaceId,
+          contactId: agentRuns.contactId,
+          channelId: agentRuns.channelId,
         })
-        .onConflictDoNothing();
+        .from(agentRuns)
+        .where(eq(agentRuns.id, data.runId))
+        .limit(1);
+      if (run) {
+        await tx
+          .insert(chatMessages)
+          .values({
+            workspaceId: run.workspaceId,
+            ticketId: data.assistantMessage.ticketId,
+            userId: data.assistantMessage.userId,
+            contactId: run.contactId,
+            channelId: run.channelId,
+            role: "assistant",
+            content: data.assistantMessage.content,
+            agentRunId: data.runId,
+            llmProvider: data.assistantMessage.llmProvider,
+            llmModel: data.assistantMessage.llmModel,
+          })
+          .onConflictDoNothing();
+      }
     }
     await tx
       .update(agentRuns)
@@ -2185,11 +2905,27 @@ export async function completeAgentRunWithMessage(data: {
     });
     if (!usageState) return false;
 
+    // Thread placement comes from the run itself so the reply always lands in the
+    // same workspace/contact thread the question arrived on.
+    const [run] = await tx
+      .select({
+        workspaceId: agentRuns.workspaceId,
+        contactId: agentRuns.contactId,
+        channelId: agentRuns.channelId,
+      })
+      .from(agentRuns)
+      .where(eq(agentRuns.id, data.runId))
+      .limit(1);
+    if (!run) return false;
+
     await tx
       .insert(chatMessages)
       .values({
+        workspaceId: run.workspaceId,
         ticketId: data.ticketId,
         userId: data.userId,
+        contactId: run.contactId,
+        channelId: run.channelId,
         role: "assistant",
         content: data.content,
         relatedKnowledgeIds: data.relatedKnowledgeIds,
@@ -2644,7 +3380,10 @@ export async function createTicketIdempotent(data: {
   runId: string;
   idempotencyKey: string;
   argsHash: string;
+  workspaceId: number;
   userId: number;
+  contactId?: number | null;
+  channelId?: number | null;
   title: string;
   description: string;
   priority?: "low" | "medium" | "high" | "urgent";
@@ -2703,7 +3442,10 @@ export async function createTicketIdempotent(data: {
     const [ticket] = await tx
       .insert(tickets)
       .values({
+        workspaceId: data.workspaceId,
         userId: data.userId,
+        contactId: data.contactId ?? null,
+        channelId: data.channelId ?? null,
         title: data.title,
         description: data.description,
         priority: data.priority ?? "medium",
@@ -2839,33 +3581,34 @@ export async function getTicketNotes(ticketId: number) {
 
 // ============ Statistics ============
 
-export async function getTicketStats() {
+export async function getTicketStats(workspaceId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const total = await db.select().from(tickets);
-  const pending = await db
-    .select()
+  const [counts] = await db
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      pending:
+        sql<number>`count(*) filter (where ${tickets.status} = 'pending')`.mapWith(
+          Number
+        ),
+      inProgress:
+        sql<number>`count(*) filter (where ${tickets.status} = 'in_progress')`.mapWith(
+          Number
+        ),
+      resolved:
+        sql<number>`count(*) filter (where ${tickets.status} = 'resolved')`.mapWith(
+          Number
+        ),
+      closed:
+        sql<number>`count(*) filter (where ${tickets.status} = 'closed')`.mapWith(
+          Number
+        ),
+    })
     .from(tickets)
-    .where(eq(tickets.status, "pending"));
-  const inProgress = await db
-    .select()
-    .from(tickets)
-    .where(eq(tickets.status, "in_progress"));
-  const resolved = await db
-    .select()
-    .from(tickets)
-    .where(eq(tickets.status, "resolved"));
-  const closed = await db
-    .select()
-    .from(tickets)
-    .where(eq(tickets.status, "closed"));
+    .where(eq(tickets.workspaceId, workspaceId));
 
-  return {
-    total: total.length,
-    pending: pending.length,
-    inProgress: inProgress.length,
-    resolved: resolved.length,
-    closed: closed.length,
-  };
+  return (
+    counts ?? { total: 0, pending: 0, inProgress: 0, resolved: 0, closed: 0 }
+  );
 }

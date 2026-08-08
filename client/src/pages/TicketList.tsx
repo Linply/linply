@@ -1,5 +1,5 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import PageNav from "@/components/PageNav";
+import AppShell from "@/components/AppShell";
+import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -38,7 +38,7 @@ const statusClasses: Record<string, string> = {
   pending: "border-amber-200 bg-amber-50 text-amber-700",
   in_progress: "border-sky-200 bg-sky-50 text-sky-700",
   resolved: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  closed: "border-gray-200 bg-gray-100 text-gray-600",
+  closed: "border-border bg-muted text-muted-foreground",
 };
 
 const priorityLabels: Record<string, string> = {
@@ -49,14 +49,14 @@ const priorityLabels: Record<string, string> = {
 };
 
 const priorityDots: Record<string, string> = {
-  low: "bg-gray-400",
+  low: "bg-muted-foreground",
   medium: "bg-amber-500",
   high: "bg-orange-500",
   urgent: "bg-red-500",
 };
 
 export default function TicketList() {
-  const { user } = useAuth({ redirectOnUnauthenticated: true });
+  const t = useT();
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(getInitialStatus);
@@ -81,34 +81,30 @@ export default function TicketList() {
     priorityFilter !== ALL_PRIORITIES;
 
   return (
-    <div className="min-h-screen bg-background pt-[5.75rem]">
-      <PageNav />
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
-        <header className="mb-6 flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm text-gray-500">
-              {user?.role === "admin" ? "服务运营" : "我的服务"}
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold text-gray-950">工单</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              {isLoading ? "正在载入" : `共 ${tickets?.length ?? 0} 条当前结果`}
-            </p>
-          </div>
-          <Button onClick={() => setLocation("/ticket/create")} size="sm">
-            <Plus className="size-4" />
-            创建工单
-          </Button>
-        </header>
+    <AppShell
+      title={t.tickets.title}
+      description={
+        isLoading ? t.common.loading : t.tickets.resultCount(tickets?.length ?? 0)
+      }
+      maxWidth="wide"
+      actions={
+        <Button onClick={() => setLocation("/ticket/create")} size="sm">
+          <Plus className="size-4" />
+          {t.tickets.create}
+        </Button>
+      }
+    >
+      <div>
 
-        <section className="mb-4 flex flex-col gap-2 rounded-lg border border-gray-200 bg-white p-2 sm:flex-row">
+        <section className="mb-4 flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row">
           <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               aria-label="搜索工单"
               placeholder="搜索标题或描述"
               value={search}
               onChange={event => setSearch(event.target.value)}
-              className="border-transparent bg-gray-50 pl-9 focus-visible:bg-white"
+              className="border-transparent bg-muted/60 pl-9 focus-visible:bg-card"
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -150,40 +146,40 @@ export default function TicketList() {
           </Button>
         </section>
 
-        <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <section className="overflow-hidden rounded-lg border border-border bg-card">
           {isLoading ? (
             <div className="flex h-56 items-center justify-center">
               <Spinner className="size-5" />
             </div>
           ) : !tickets || tickets.length === 0 ? (
             <div className="flex h-56 flex-col items-center justify-center px-6 text-center">
-              <span className="mb-3 flex size-10 items-center justify-center rounded-md bg-gray-100 text-gray-500">
+              <span className="mb-3 flex size-10 items-center justify-center rounded-md bg-muted text-muted-foreground">
                 <Tickets className="size-5" />
               </span>
-              <p className="text-sm font-medium text-gray-900">没有找到工单</p>
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="text-sm font-medium text-foreground">没有找到工单</p>
+              <p className="mt-1 text-sm text-muted-foreground">
                 {hasFilters ? "尝试调整筛选条件" : "创建第一条工单后会显示在这里"}
               </p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-border">
               {tickets.map((ticket: any) => (
                 <button
                   key={ticket.id}
                   type="button"
                   onClick={() => setLocation(`/ticket/${ticket.id}`)}
-                  className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-4 text-left transition-colors hover:bg-gray-50 sm:grid-cols-[minmax(0,1fr)_7rem_8rem_1rem] sm:px-5"
+                  className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:grid-cols-[minmax(0,1fr)_7rem_8rem_1rem] sm:px-5"
                 >
                   <span className="min-w-0">
                     <span className="flex min-w-0 items-center gap-2">
-                      <span className="shrink-0 font-mono text-xs text-gray-400">
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
                         #{ticket.id}
                       </span>
-                      <span className="truncate text-sm font-medium text-gray-950">
+                      <span className="truncate text-sm font-medium text-foreground">
                         {ticket.title}
                       </span>
                     </span>
-                    <span className="mt-1 block truncate text-sm text-gray-500">
+                    <span className="mt-1 block truncate text-sm text-muted-foreground">
                       {ticket.description}
                     </span>
                     <span className="mt-2 flex items-center gap-3 sm:hidden">
@@ -194,7 +190,7 @@ export default function TicketList() {
                       >
                         {statusLabels[ticket.status] ?? ticket.status}
                       </span>
-                      <span className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                         <span
                           className={`size-1.5 rounded-full ${
                             priorityDots[ticket.priority] ?? priorityDots.low
@@ -212,7 +208,7 @@ export default function TicketList() {
                   >
                     {statusLabels[ticket.status] ?? ticket.status}
                   </span>
-                  <span className="hidden text-xs text-gray-500 sm:block">
+                  <span className="hidden text-xs text-muted-foreground sm:block">
                     <span className="mb-1 flex items-center gap-1.5">
                       <span
                         className={`size-1.5 rounded-full ${
@@ -226,13 +222,13 @@ export default function TicketList() {
                       addSuffix: true,
                     })}
                   </span>
-                  <ChevronRight className="size-4 text-gray-300 transition-colors group-hover:text-gray-600" />
+                  <ChevronRight className="size-4 text-muted-foreground/60 transition-colors group-hover:text-foreground" />
                 </button>
               ))}
             </div>
           )}
         </section>
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }
