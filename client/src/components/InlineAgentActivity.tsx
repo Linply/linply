@@ -35,7 +35,6 @@ export type InlineAgentActivityItem = {
 
 type InlineAgentActivityProps = {
   items: InlineAgentActivityItem[];
-  visible: boolean;
   runCompleted?: boolean;
 };
 
@@ -190,68 +189,47 @@ function ActivityRow({
   );
 }
 
-/** The "still with you" line shown before the first token arrives. */
-export function AgentWorkingStatus({
-  visible,
-  agentName,
-}: {
-  visible: boolean;
-  agentName: string;
-}) {
+/**
+ * The whole of the "nothing to show yet" state: one line, in the place the
+ * answer will appear, the same height as a line of reply text. The answer
+ * replaces it in situ — nothing is added or removed around it, so a view
+ * pinned to the bottom does not jump when the first token lands.
+ */
+export function AgentWorkingLine({ agentName }: { agentName: string }) {
   const t = useT();
 
   return (
     <div
-      className={`grid transition-[grid-template-rows,opacity,margin] duration-300 ease-out motion-reduce:transition-none ${
-        visible
-          ? "mt-2 grid-rows-[1fr] opacity-100"
-          : "pointer-events-none mt-0 grid-rows-[0fr] opacity-0"
-      }`}
-      aria-hidden={!visible}
-      inert={!visible}
+      className="flex h-7 items-center gap-1.5 text-[13px] leading-5 text-muted-foreground"
+      role="status"
+      aria-label={t.chat.typing(agentName)}
     >
-      <div className="min-h-0 overflow-hidden">
-        <div
-          className="flex min-h-6 items-center gap-2 py-0.5 text-[13px] leading-5 text-muted-foreground"
-          role="status"
-        >
-          <span className="agent-activity-pending">
-            {t.chat.typing(agentName)}
-          </span>
-          <span aria-hidden="true" className="flex items-end gap-0.5 pb-1">
-            {[0, 1, 2].map(index => (
-              <span
-                key={index}
-                className="agent-typing-dot size-1 rounded-full bg-muted-foreground/70"
-                style={{ animationDelay: `${index * 160}ms` }}
-              />
-            ))}
-          </span>
-        </div>
-      </div>
+      <Search aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="agent-activity-pending">
+        {t.agentActivity.thinking({})}
+      </span>
     </div>
   );
 }
 
 export default function InlineAgentActivity({
   items,
-  visible,
   runCompleted = false,
 }: InlineAgentActivityProps) {
   if (items.length === 0) return null;
 
   return (
-    <div
-      className={`grid transition-[grid-template-rows,opacity,margin] duration-500 ease-out motion-reduce:transition-none ${
-        visible
-          ? "my-3 grid-rows-[1fr] opacity-100"
-          : "pointer-events-none my-0 grid-rows-[0fr] opacity-0"
-      }`}
-      aria-hidden={!visible}
-      inert={!visible}
-    >
-      <div className="min-h-0 overflow-hidden">
-        <div className="space-y-0.5 py-0.5">
+    /**
+     * No height transition here: rows arrive one at a time while the view is
+     * pinned to the bottom, and animating the container's height re-flows the
+     * whole thread after each one — which reads as the page bouncing.
+     *
+     * The small top margin keeps the first row roughly where the working line
+     * sat, so swapping one for the other barely moves anything.
+     */
+    <div className="mb-3 mt-1">
+      <div>
+        <div className="space-y-0.5">
           {items.map((item, index) => (
             <ActivityRow
               key={item.id}

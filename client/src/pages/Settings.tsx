@@ -24,16 +24,23 @@ type Tone = (typeof TONE_VALUES)[number];
 /** Radix needs a non-empty value, and "" is how the workspace stores "default". */
 const FOLLOW_DEPLOYMENT = "__default__";
 
-export const buildToneOptions = (t: Dictionary) =>
-  [
-    { value: "friendly" as const, label: t.tone.friendly, hint: t.tone.friendlyHint },
-    {
-      value: "professional" as const,
-      label: t.tone.professional,
-      hint: t.tone.professionalHint,
-    },
-    { value: "concise" as const, label: t.tone.concise, hint: t.tone.conciseHint },
-  ];
+export const buildToneOptions = (t: Dictionary) => [
+  {
+    value: "friendly" as const,
+    label: t.tone.friendly,
+    hint: t.tone.friendlyHint,
+  },
+  {
+    value: "professional" as const,
+    label: t.tone.professional,
+    hint: t.tone.professionalHint,
+  },
+  {
+    value: "concise" as const,
+    label: t.tone.concise,
+    hint: t.tone.conciseHint,
+  },
+];
 
 function Section({
   title,
@@ -143,26 +150,10 @@ export default function Settings() {
     }
   };
 
+  // One save button, at the end of the form — a second one in the header just
+  // asks the same question twice.
   return (
-    <AppShell
-      title={t.settings.title}
-      description={t.settings.subtitle}
-      actions={
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => void save()}
-          disabled={update.isPending}
-        >
-          {update.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Save className="size-4" />
-          )}
-          {t.common.save}
-        </Button>
-      }
-    >
+    <AppShell title={t.settings.title} description={t.settings.subtitle}>
       <div className="space-y-4">
         <Section
           title={t.settings.identityTitle}
@@ -177,7 +168,10 @@ export default function Settings() {
               }
             />
           </Field>
-          <Field label={t.onboarding.agentName} hint={t.onboarding.agentNameHint}>
+          <Field
+            label={t.onboarding.agentName}
+            hint={t.onboarding.agentNameHint}
+          >
             <Input
               value={form.agentName}
               maxLength={60}
@@ -225,9 +219,7 @@ export default function Settings() {
           ) : (
             <Field
               label={t.settings.modelLabel}
-              hint={
-                form.agentModel ? undefined : t.settings.modelDefaultHint
-              }
+              hint={form.agentModel ? undefined : t.settings.modelDefaultHint}
             >
               <Select
                 value={form.agentModel || FOLLOW_DEPLOYMENT}

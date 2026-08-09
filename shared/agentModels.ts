@@ -41,23 +41,34 @@ export const getAgentModelTier = (id: string): AgentModelTier => {
   return "flagship";
 };
 
+/** Dated snapshots like `gpt-5.4-2026-03-05` keep the date as one unit. */
+const SNAPSHOT_DATE_PATTERN = /-(\d{4}-\d{2}-\d{2})$/;
+
 /**
- * `gpt-4.1-mini` reads as "GPT-4.1 mini". Only the vendor prefix is upper-cased
- * — the rest is left alone so an unfamiliar suffix survives intact.
+ * `gpt-4.1-mini` reads as "GPT-4.1 mini", `gpt-5.4-2026-03-05` as
+ * "GPT-5.4 (2026-03-05)". Only the vendor prefix is upper-cased — the rest is
+ * left alone so an unfamiliar suffix survives intact.
  */
 export const getAgentModelLabel = (id: string) => {
-  const [head, ...rest] = id.split("-");
+  const snapshot = id.match(SNAPSHOT_DATE_PATTERN)?.[1];
+  const base = snapshot ? id.replace(SNAPSHOT_DATE_PATTERN, "") : id;
+  const withSnapshot = (label: string) =>
+    snapshot ? `${label} (${snapshot})` : label;
+
+  const [head, ...rest] = base.split("-");
   const family = /^(gpt|o)\d*/i.test(head ?? "")
     ? (head ?? "").toUpperCase()
-    : (head ?? id);
-  if (rest.length === 0) return family;
+    : (head ?? base);
+  if (rest.length === 0) return withSnapshot(family);
 
   // The version travels with the family name: GPT-4.1, not GPT 4.1.
   const [version, ...suffix] = rest;
   const versioned = /^[\d.]+$/.test(version ?? "")
     ? `${family}-${version}`
     : `${family} ${version}`;
-  return suffix.length > 0 ? `${versioned} ${suffix.join(" ")}` : versioned;
+  return withSnapshot(
+    suffix.length > 0 ? `${versioned} ${suffix.join(" ")}` : versioned
+  );
 };
 
 export const buildAgentModelOption = (

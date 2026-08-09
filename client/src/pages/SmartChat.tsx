@@ -3,7 +3,7 @@ import { useWorkspace } from "@/hooks/useWorkspace";
 import { useT } from "@/i18n";
 import type { AgentEvent } from "@/components/agentTimeline";
 import InlineAgentActivity, {
-  AgentWorkingStatus,
+  AgentWorkingLine,
   type InlineAgentActivityItem,
 } from "@/components/InlineAgentActivity";
 import CreditQuotaIndicator from "@/components/CreditQuotaIndicator";
@@ -215,6 +215,18 @@ const replaceStreamText = (
       : item
   );
 };
+
+/**
+ * The `thinking` step carries no information — it is a fixed string meaning
+ * "nothing to show yet", which is exactly the job the typing dots already do,
+ * in the place the answer will appear. Rendering both means the bubble loses
+ * two rows the moment text arrives, and a view pinned to the bottom jumps by
+ * that much on every reply. The step is still persisted for the run detail.
+ */
+const visibleStreamItems = (items: ChatStreamItem[] = []): ChatStreamItem[] =>
+  items.filter(
+    item => item.type === "text" || item.event.type !== "thinking"
+  );
 
 const groupStreamItems = (items: ChatStreamItem[]): ChatRenderGroup[] =>
   items.reduce<ChatRenderGroup[]>((groups, item) => {
@@ -538,17 +550,6 @@ export default function SmartChat() {
           Math.round((quotaSnapshot?.remainingTokens ?? 0) / 1000)
         )
       : null;
-  /**
-   * The typing line only stands in for text that has not arrived yet — once
-   * tokens are streaming, the caret at the end of the reply says the same thing
-   * without a second indicator competing with it.
-   */
-  const streamingAssistant = messages.findLast(
-    message => message.role === "assistant" && message.isStreaming
-  );
-  const showTypingIndicator = Boolean(
-    streamingAssistant && !streamingAssistant.content
-  );
 
   const updateAssistant = (
     assistantId: string,
@@ -1046,11 +1047,17 @@ export default function SmartChat() {
             </div>
           ) : (
             messages.map(message => {
-              const streamGroups = groupStreamItems(message.streamItems ?? []);
+              const streamGroups = groupStreamItems(
+                visibleStreamItems(message.streamItems)
+              );
               const hasStreamItems = streamGroups.length > 0;
               const lastTextGroup = streamGroups.findLast(
                 group => group.type === "text"
               );
+              const awaitingFirstToken =
+                message.role === "assistant" &&
+                Boolean(message.isStreaming) &&
+                !message.content;
 
               return (
                 <div
@@ -1097,7 +1104,6 @@ export default function SmartChat() {
                             <InlineAgentActivity
                               key={group.id}
                               items={group.items}
-                              visible
                               runCompleted={
                                 (!message.isStreaming && !message.error) ||
                                 group.id !== streamGroups.at(-1)?.id
@@ -1110,6 +1116,12 @@ export default function SmartChat() {
                       <div className="prose prose-sm max-w-none">
                         <Streamdown>{message.content}</Streamdown>
                       </div>
+                    ) : null}
+
+                    {/* Once a tool row is on screen it is already shimmering;
+                        a second "still working" line would just repeat it. */}
+                    {awaitingFirstToken && !message.error && !hasStreamItems ? (
+                      <AgentWorkingLine agentName={agentName} />
                     ) : null}
 
                     {message.error ? (
@@ -1169,7 +1181,7 @@ export default function SmartChat() {
                     ) : null}
 
                     {message.role === "assistant" && message.runId ? (
-                      <div className="mt-4 flex h-9 items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
+                      <div className="mt-2 flex h-9 items-center justify-between text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1.5 tabular-nums">
                           <Clock3 className="size-4" />
                           {message.isStreaming
@@ -1322,14 +1334,6 @@ export default function SmartChat() {
               );
             })
           )}
-          {messages.length > 0 ? (
-            <div className="!mt-0 min-h-16 pl-10 pt-2">
-              <AgentWorkingStatus
-                visible={showTypingIndicator}
-                agentName={agentName}
-              />
-            </div>
-          ) : null}
           </div>
         </div>
 

@@ -58,6 +58,15 @@ describe("model id heuristics", () => {
     );
   });
 
+  it("keeps a dated snapshot readable instead of splitting the date", () => {
+    expect(getAgentModelLabel("gpt-5.4-2026-03-05")).toBe(
+      "GPT-5.4 (2026-03-05)"
+    );
+    expect(getAgentModelLabel("gpt-5.2-pro-2025-12-11")).toBe(
+      "GPT-5.2 pro (2025-12-11)"
+    );
+  });
+
   it("sorts a model into a tier so the picker can explain the trade-off", () => {
     expect(getAgentModelTier("gpt-5.5")).toBe("flagship");
     expect(getAgentModelTier("gpt-4.1-mini")).toBe("balanced");
