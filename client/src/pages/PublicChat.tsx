@@ -165,7 +165,7 @@ export default function PublicChat() {
     <div className="flex min-h-screen flex-col bg-background">
       <header className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex w-full max-w-2xl items-center gap-3 px-4 py-3">
-          <BrandMark className="size-9 rounded-full" glyphClassName="size-4" />
+          <BrandMark className="size-9" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">
               {agent.agentName}
