@@ -19,7 +19,38 @@ import type { ConversationScope } from "./workspace";
 
 import { TokenQuotaExceededError } from "./tokenQuota";
 
-export const getPublicAgentErrorMessage = (error: unknown) => {
+/**
+ * Postgres puts the useful part of a failure on `cause` — the driver's message
+ * is just the SQL that failed. Losing it turns every database problem into the
+ * same unactionable sentence.
+ */
+const describeErrorCause = (error: unknown): Record<string, unknown> => {
+  const cause = (error as { cause?: unknown })?.cause;
+  if (!cause || typeof cause !== "object") return {};
+  const detail = cause as {
+    message?: unknown;
+    code?: unknown;
+    detail?: unknown;
+    column?: unknown;
+    table?: unknown;
+    constraint?: unknown;
+    routine?: unknown;
+  };
+  return {
+    causeMessage: detail.message,
+    code: detail.code,
+    detail: detail.detail,
+    column: detail.column,
+    table: detail.table,
+    constraint: detail.constraint,
+    routine: detail.routine,
+  };
+};
+
+export const getPublicAgentErrorMessage = (
+  error: unknown,
+  context?: Record<string, unknown>
+) => {
   if (error instanceof TokenQuotaExceededError) return error.message;
   const message =
     error instanceof Error ? error.message : "发送消息失败，请稍后重试";
@@ -29,7 +60,13 @@ export const getPublicAgentErrorMessage = (error: unknown) => {
     /insert into "agent_run/i.test(message) ||
     /relation "agent_run/i.test(message)
   ) {
-    return "Agent 运行记录写入失败，请确认数据库迁移已执行后重试。";
+    // The customer gets a short sentence; the operator gets the actual failure.
+    console.error("[Agent] Database error while running the agent", {
+      ...context,
+      message,
+      ...describeErrorCause(error),
+    });
+    return "Agent 运行记录写入失败，请稍后重试；若持续失败请检查服务端日志。";
   }
 
   return message;
@@ -92,7 +129,10 @@ export async function enqueueAgentRun(input: {
   });
   if (ENV.agentExecutionMode === "inline") {
     void executeAgentRun(run).catch(error => {
-      console.error("[Agent] Inline execution failed", { runId: run.id, error });
+      console.error("[Agent] Inline execution failed", {
+        runId: run.id,
+        error,
+      });
     });
   }
   return { ...run, quota };
@@ -119,24 +159,33 @@ async function executeAgentRunInternal(
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => abortController.abort(), LLM_TIMEOUT_MS);
   const heartbeatId = worker
-    ? setInterval(() => {
-        void db.renewAgentRunLease({
-          runId: run.id,
-          workerId: worker.workerId,
-          leaseMs: worker.leaseMs,
-        }).then(renewed => {
-          if (!renewed) abortController.abort();
-        }).catch(error => {
-          console.error("[Agent Worker] Failed to renew lease", {
-            runId: run.id,
-            error,
-          });
-        });
-      }, Math.max(1_000, Math.floor(worker.leaseMs / 3)))
+    ? setInterval(
+        () => {
+          void db
+            .renewAgentRunLease({
+              runId: run.id,
+              workerId: worker.workerId,
+              leaseMs: worker.leaseMs,
+            })
+            .then(renewed => {
+              if (!renewed) abortController.abort();
+            })
+            .catch(error => {
+              console.error("[Agent Worker] Failed to renew lease", {
+                runId: run.id,
+                error,
+              });
+            });
+        },
+        Math.max(1_000, Math.floor(worker.leaseMs / 3))
+      )
     : undefined;
 
   try {
-    const runMetadata = parseJsonValue<Record<string, unknown>>(run.metadata, {});
+    const runMetadata = parseJsonValue<Record<string, unknown>>(
+      run.metadata,
+      {}
+    );
     const authorization =
       parseAgentWriteAuthorization(runMetadata.authorization) ??
       deriveAgentWriteAuthorization(run.input);
@@ -148,10 +197,12 @@ async function executeAgentRunInternal(
         content: run.input,
         authorization,
         retryOfRunId: run.retryOfRunId ?? undefined,
-        executionFence: worker ? {
-          workerId: worker.workerId,
-          attemptCount: run.attemptCount,
-        } : undefined,
+        executionFence: worker
+          ? {
+              workerId: worker.workerId,
+              attemptCount: run.attemptCount,
+            }
+          : undefined,
       },
       abortController.signal,
       async event => {
@@ -191,18 +242,21 @@ async function executeAgentRunInternal(
     const message = getPublicAgentErrorMessage(
       abortController.signal.aborted
         ? new Error("LLM call timed out，请稍后重试")
-        : error
+        : error,
+      { stage: "execute", runId: run.id, attempt: run.attemptCount }
     );
-    await db.finalizeFailedAgentRun({
-      runId: run.id,
-      attemptNumber: run.attemptCount,
-      error: message,
-      executionFence: worker
-        ? { workerId: worker.workerId, attemptCount: run.attemptCount }
-        : undefined,
-    }).catch(updateError => {
-      console.error("[Agent] Failed to mark run failed", updateError);
-    });
+    await db
+      .finalizeFailedAgentRun({
+        runId: run.id,
+        attemptNumber: run.attemptCount,
+        error: message,
+        executionFence: worker
+          ? { workerId: worker.workerId, attemptCount: run.attemptCount }
+          : undefined,
+      })
+      .catch(updateError => {
+        console.error("[Agent] Failed to mark run failed", updateError);
+      });
     await appendAgentStreamEvent(run.id, "error", {
       message,
       stats: await db.getAgentRunById(run.id).then(currentRun =>

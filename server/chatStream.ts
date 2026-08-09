@@ -92,20 +92,31 @@ const streamAgentRunEvents = async (
     const events = await db.getAgentRunEvents(runId, cursor);
     for (const event of events) {
       const payload = event.payload as Record<string, unknown>;
-      writeSse(res, {
-        type: event.eventType as SsePayload["type"],
-        ...payload,
-      } as SsePayload, event.id);
+      writeSse(
+        res,
+        {
+          type: event.eventType as SsePayload["type"],
+          ...payload,
+        } as SsePayload,
+        event.id
+      );
       cursor = event.id;
     }
 
-    if (events.some(event => event.eventType === "done" || event.eventType === "error")) {
+    if (
+      events.some(
+        event => event.eventType === "done" || event.eventType === "error"
+      )
+    ) {
       return;
     }
 
     const currentRun = await db.getAgentRunById(runId);
     if (currentRun?.status === "failed" && events.length === 0) {
-      writeSse(res, { type: "error", message: currentRun.error ?? "Agent Run 执行失败" });
+      writeSse(res, {
+        type: "error",
+        message: currentRun.error ?? "Agent Run 执行失败",
+      });
       return;
     }
     if (currentRun?.status === "completed" && events.length === 0) {
@@ -132,8 +143,15 @@ const streamAgentRunEvents = async (
   }
 };
 
-const sendSseError = (res: Response, error: unknown) => {
-  const message = getPublicAgentErrorMessage(error);
+const sendSseError = (
+  res: Response,
+  error: unknown,
+  context?: Record<string, unknown>
+) => {
+  const message = getPublicAgentErrorMessage(error, {
+    stage: "stream",
+    ...context,
+  });
   writeSse(res, { type: "error", message });
 };
 
@@ -143,12 +161,10 @@ export function registerChatStreamRoutes(app: Express) {
       const user = await authenticateRequest(req);
       const workspace = await requireWorkspaceForUser(user);
       const scope = consoleScope(workspace);
-      const content = typeof req.body?.content === "string"
-        ? req.body.content.trim()
-        : "";
-      const ticketId = typeof req.body?.ticketId === "number"
-        ? req.body.ticketId
-        : undefined;
+      const content =
+        typeof req.body?.content === "string" ? req.body.content.trim() : "";
+      const ticketId =
+        typeof req.body?.ticketId === "number" ? req.body.ticketId : undefined;
 
       if (!content) {
         res.status(400).json({ error: "消息内容不能为空" });
@@ -182,7 +198,9 @@ export function registerChatStreamRoutes(app: Express) {
         });
         return;
       }
-      res.status(500).json({ error: getPublicAgentErrorMessage(error) });
+      res
+        .status(500)
+        .json({ error: getPublicAgentErrorMessage(error, { stage: "start" }) });
     }
   });
 
@@ -194,15 +212,17 @@ export function registerChatStreamRoutes(app: Express) {
       const afterSeqValue = Number(
         req.query.afterSeq ?? req.headers["last-event-id"] ?? 0
       );
-      const afterSeq = Number.isFinite(afterSeqValue) && afterSeqValue > 0
-        ? Math.floor(afterSeqValue)
-        : 0;
+      const afterSeq =
+        Number.isFinite(afterSeqValue) && afterSeqValue > 0
+          ? Math.floor(afterSeqValue)
+          : 0;
       await streamAgentRunEvents(res, req.params.runId, afterSeq, workspace.id);
     } catch (error) {
-      if (!res.writableEnded) sendSseError(res, error);
+      if (!res.writableEnded) {
+        sendSseError(res, error, { runId: req.params.runId });
+      }
     } finally {
       res.end();
     }
   });
-
 }
