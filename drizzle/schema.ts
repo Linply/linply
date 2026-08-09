@@ -265,6 +265,8 @@ export const workspaces = pgTable(
     agentTone: varchar("agentTone", { length: 16 })
       .default("friendly")
       .notNull(), // professional | friendly | concise，用于生成 Agent 语气指令
+    /** 回答用哪个模型；为空表示跟随部署的 OPENAI_MODEL。 */
+    agentModel: varchar("agentModel", { length: 128 }),
     greeting: text("greeting"), // 会话开场白；为空时使用默认文案
     fallbackReply: text("fallbackReply"), // 知识库无法回答时的兜底话术
     businessContext: text("businessContext"), // 用户填写的业务简介，作为 Agent 的背景知识

@@ -5,6 +5,8 @@
  * Values that need runtime data are functions instead of `%s` placeholders —
  * that keeps argument types checked and lets each language order words freely.
  */
+import type { AgentActivityDictionary } from "@/components/agentTimeline";
+
 export const en = {
   common: {
     save: "Save",
@@ -123,7 +125,8 @@ export const en = {
       "No entries were parsed. Markdown needs ## headings; CSV needs title/content columns.",
     imported: (count: number) => `Imported ${count} entries`,
     importFailed: "Import failed",
-    noKnowledgeWarning: "Without knowledge, the agent can only say it is unsure",
+    noKnowledgeWarning:
+      "Without knowledge, the agent can only say it is unsure",
 
     previewTitle: "Try it once",
     previewSummary: "Check whether the answers hold up",
@@ -290,6 +293,13 @@ export const en = {
     quotaExhausted: "Out of credits for today — try again after the reset",
     quotaLow: (credits: number) => `Credits running low — ${credits} left`,
     citations: (count: number) => `Sources · ${count} entries`,
+    typing: (agentName: string) => `${agentName} is typing`,
+    showActivityDetails: "Show details",
+    retry: "Try again",
+    degraded:
+      "Knowledge search fell back to keywords, so this answer is worth a human check.",
+    convertToTicket: "Turn into a ticket",
+    openTicket: (id: number) => `Open ticket #${id}`,
   },
 
   publicChat: {
@@ -304,7 +314,8 @@ export const en = {
 
   settings: {
     title: "Agent settings",
-    subtitle: "What your agent is called, how it speaks, what it does when stuck",
+    subtitle:
+      "What your agent is called, how it speaks, what it does when stuck",
     saved: "Saved — it takes effect on the next conversation",
     identityTitle: "Identity",
     identityDescription:
@@ -328,6 +339,21 @@ export const en = {
       "Turning this off disables the public chat page immediately. Telegram is unaffected.",
     shareToggle: "Allow sign-in-free chat through the share link",
     saveSettings: "Save settings",
+    modelTitle: "Model",
+    modelDescription:
+      "Which model writes the answers. Stronger models reason better over messy questions; smaller ones reply faster and cost less per conversation.",
+    modelLabel: "Answering model",
+    modelDefaultOption: (model: string) => `Follow the deployment (${model})`,
+    modelDefaultHint: "Whatever this deployment is configured with",
+    modelContextWindow: (tokens: string) => `${tokens} context`,
+    modelUnavailable:
+      "No models to list — this deployment has no OPENAI_API_KEY set, so the agent cannot answer yet either.",
+    modelTiers: {
+      flagship: "Strongest reasoning",
+      balanced: "Balanced",
+      fast: "Fastest and cheapest",
+      reasoning: "Reasoning model",
+    },
   },
 
   plans: {
@@ -384,14 +410,16 @@ export const en = {
 
   knowledge: {
     title: "Knowledge",
-    subtitle: "The only thing your agent answers from, private to your workspace",
+    subtitle:
+      "The only thing your agent answers from, private to your workspace",
     debugEntry: "Retrieval debug",
     addEntry: "New entry",
   },
 
   ragDebug: {
     title: "Retrieval debug",
-    subtitle: "See which entries a question recalls, and whether by vector or keyword",
+    subtitle:
+      "See which entries a question recalls, and whether by vector or keyword",
   },
 
   tickets: {
@@ -412,7 +440,63 @@ export const en = {
     notFoundHint:
       "Check that the Run ID is complete, and that it belongs to your workspace",
     backToChat: "Back to test chat",
+    noArgs: "No arguments",
+    noResult: "No result yet",
+    stepLabels: {
+      thinking: "Thinking",
+      tool_call: "Tool call",
+      tool_result: "Result",
+      final: "Final answer",
+      error: "Failed",
+    },
   },
+
+  /**
+   * One line per thing the agent does, rendered from the key the server sends.
+   * Keep them short enough to sit on a single row and phrased as an action —
+   * the reader is watching work happen, not reading a log.
+   */
+  agentActivity: {
+    thinking: () => "Reading your question",
+    "searchKnowledge.running": ({ query }) =>
+      query ? `Looking up “${query}”` : "Searching your knowledge",
+    "searchKnowledge.done": ({ count = 0 }) =>
+      `Found ${count} matching ${count === 1 ? "entry" : "entries"}`,
+    "searchKnowledge.empty": () => "Nothing in the knowledge base on this",
+    "createTicket.running": ({ query }) =>
+      query ? `Opening a ticket: ${query}` : "Opening a ticket",
+    "createTicket.done": ({ ticketId }) =>
+      ticketId ? `Ticket #${ticketId} created` : "Ticket created",
+    "createTicket.replayed": ({ ticketId }) =>
+      ticketId
+        ? `Ticket #${ticketId} already existed`
+        : "Ticket already existed",
+    "listTickets.running": () => "Checking your tickets",
+    "listTickets.done": ({ count = 0 }) =>
+      `Found ${count} ticket${count === 1 ? "" : "s"}`,
+    "listTickets.empty": () => "No tickets found",
+    "getTicketById.running": ({ ticketId }) =>
+      ticketId ? `Opening ticket #${ticketId}` : "Opening the ticket",
+    "getTicketById.done": ({ ticketId }) =>
+      ticketId ? `Read ticket #${ticketId}` : "Read the ticket",
+    "addTicketNote.running": ({ ticketId }) =>
+      ticketId ? `Adding a note to ticket #${ticketId}` : "Adding a note",
+    "addTicketNote.done": ({ ticketId }) =>
+      ticketId ? `Note added to ticket #${ticketId}` : "Note added",
+    "tool.running": ({ label }) => (label ? `Working on ${label}` : "Working"),
+    "tool.done": ({ label }) => (label ? `${label} done` : "Done"),
+    "tool.error": ({ label }) =>
+      label ? `Couldn’t finish: ${label}` : "That step didn’t finish",
+  } as AgentActivityDictionary,
+
+  /** Used when a step failed and we have to name the tool in plain words. */
+  agentToolLabels: {
+    searchKnowledge: "the knowledge search",
+    createTicket: "creating the ticket",
+    listTickets: "the ticket list",
+    getTicketById: "the ticket details",
+    addTicketNote: "the ticket note",
+  } as Record<string, string>,
 };
 
 /**

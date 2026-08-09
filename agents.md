@@ -63,7 +63,8 @@
 ### 数据模型（概览）
 
 - **workspaces**：工作区，`ownerUserId` 唯一。保存 `agentName` / `agentTone` / `greeting` / `fallbackReply` /
-  `businessContext`（这些直接进入系统提示词）、`publicKey`（分享链接）和 `onboardingStep`。
+  `businessContext`（这些直接进入系统提示词）、`agentModel`（用哪个模型回答，为空跟随部署默认）、
+  `publicKey`（分享链接）和 `onboardingStep`。
 - **workspace_channels**：渠道连接，`(workspaceId, provider)` 唯一。`credentials` 存 bot token，
   **绝不可返回给客户端**（统一走 `toChannelDto` 剥离）；`webhookSecret` 同时用于 URL 路径与 Telegram `secret_token`。
 - **channel_contacts**：外部访客，不注册不登录，靠 `(channelId, externalId)` 识别。
@@ -109,6 +110,31 @@
 
 Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/chat/stream/:runId` 订阅事件。SSE 以 JSON `type` 区分 `agent_event`、`delta`、`meta`、`done`、`error` 和重试时的 `reset`，Agent 事件同时带有 SSE `id`，客户端通过 `afterSeq` 续接。
 
+**模型选择**
+
+每个工作区自己决定用哪个模型回答，存在 `workspaces.agentModel`；为空表示跟随部署的 `OPENAI_MODEL`。
+
+- 候选清单不写死在代码里，而是**问端点要**：`server/agentModelCatalog.ts` 用当前 key 列 `/v1/models`，
+  过滤掉 embedding / audio / image / realtime / instruct 等非对话模型，缓存 10 分钟。
+  key 用不了的模型永远不会出现在选项里；列表拉不到时退回到当前配置的模型，设置页不会因此打不开。
+- `OPENAI_MODELS` 设了就直接用它，不发网络请求——给只转发部分模型的代理，或者想收窄选择的部署。
+- 展示名和档位（flagship / balanced / fast / reasoning）由 `shared/agentModels.ts` 从模型 id 推出来，
+  所以出现没见过的新型号也能正常渲染。上下文窗口只有 `OPENAI_MODEL_CONTEXT_WINDOWS` 声明过才显示。
+- 写入时在 `workspace.update` 里校验模型是否在候选内；执行时 `resolveWorkspaceModel` 是同步的，不发网络请求，
+  聊天热路径不受影响。选中的模型会进 Agent 构造、`agent_runs.llmModel`、SSE `done` 和用量统计的上下文窗口。
+
+**对话风格**
+
+Agent 的人设写在 `server/agentPersona.ts`，目标是一个真人客服而不是一份文档：
+
+- 第一人称、口语、短句，默认两三句话说完；先接住情绪再给答案；一次只问一个问题；跟着用户的语言走。
+- 不写小标题、不堆项目符号（只有分步操作才编号）；不说“根据知识库”“作为 AI 助手”这类系统腔。
+- 正文里不出现工具名、JSON、内部字段和“参考：xxx”——引用来源由界面渲染成 chips。
+- 工作区的名称、语气、业务背景和兜底话术仍然直接进入这份人设；语气档位（professional / friendly / concise）只调语域，不改上面的结构。
+- 模型仍可能把结构化 JSON 或来源列表写进正文，`sanitizeAssistantReply` 会在落库和返回前剥掉：
+  只删除解析后确实是结构化摘要的代码块和结尾的来源清单，正常代码块不受影响。
+  流式路径下删掉过内容时，`done` 事件会带上 `finalContent`，前端用它替换已经流出去的文本，保证气泡和历史一致。
+
 **检索策略（RAG）**
 
 - 默认本地 `BAAI/bge-small-zh-v1.5` 生成 512 维查询向量，PostgreSQL pgvector 按余弦距离 + HNSW 索引召回。
@@ -125,6 +151,20 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 - `addTicketNote`：给工单追加备注或处理记录。
 
 工具入参通过 Zod / JSON Schema 校验；工具参数和结果在前端展示前会做摘要，避免暴露过长内容或敏感信息。
+
+每个工具还接受一个 `reason`：一句第一人称、用用户语言写的话，例如「我查一下退货时限」，**直接显示给用户**。
+它是文案不是参数——`splitToolReason` 在校验、哈希和落库前把它摘掉，所以措辞变化不会影响幂等键和重放哈希。
+
+**工具调用的呈现**
+
+`server/agentToolPresentation.ts` 把每次调用翻译成一行给人看的话，形状定义在 `shared/agentActivity.ts`：
+
+- 服务端发的是 `key` + `params`（`searchKnowledge.done` + `{count: 3}`），浏览器按当前语言渲染；
+  同时带一份中文 `text`，给没有 i18n 层的渠道兜底。模型写了 `reason` 时，`reason` 永远优先。
+- `tool_call` 与 `tool_result` 事件都带 `callId`，前端据此精确配对，并发调用也不会串行错位。
+- 前端一行只显示一句：进行中用渐变扫光（`.agent-activity-pending`）表示在跑，完成后把结果接在意图后面，
+  例如「我查一下退货时限 · 找到 3 条相关内容」；失败只说这一步没成功，不把原始错误抛给用户。
+- 这份 activity 会写进 `agent_run_steps.metadata`，`/runs/:runId` 详情页复用同一套文案。
 
 **执行过程与排查**
 
@@ -259,9 +299,12 @@ Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/ch
 
 ```
 client/          前端（pages 页面、components 组件、lib 工具）
-server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、agentRunExecution.ts 执行编排、
+server/          后端（routers.ts 路由、chatStream.ts 流式聊天、agentService.ts Agent、agentPersona.ts 人设与指令、
+                 agentToolPresentation.ts 工具文案、agentRunExecution.ts 执行编排、
                  agentWorker.ts Worker、workspace.ts 工作区与 scope、accessControl.ts 权限边界、db.ts 数据访问、
                  channels/ 渠道适配与入站管线、knowledge/ 文档解析与导入、_core/ 框架）
+shared/          前后端共用类型（agentActivity.ts 执行过程文案协议、agentModels.ts 模型展示规则、
+                 plans.ts 套餐、types.ts 统一导出）
 drizzle/         schema.ts 表定义 + 迁移文件
 scripts/         seed-data、embed-knowledge 等工具脚本
 compose.yaml     postgres + embeddings 本地服务；Railway demo 使用 app 内置 embedding endpoint
@@ -292,7 +335,9 @@ pnpm kb:embed:check # 检查 embedding 服务连通性
 - **加渠道**：在 `server/channels/` 实现 `ChannelAdapter`，注册进 `inbound.ts` 的 `ADAPTERS`，
   并在 `types.ts` 的 `CHANNEL_PROVIDERS` 标记为 available。入站统一走 `handleInboundChannelMessage`。
 - **加页面**：在 `client/src/pages/` 建组件，用 `trpc.*.useQuery/useMutation` 取数，在 `App.tsx` 注册路由。
-- **加 Agent 工具**：在 `server/agentService.ts` 定义 tool、入参 schema、权限校验、脱敏摘要和事件持久化。
+- **加 Agent 工具**：在 `server/agentService.ts` 定义 tool、入参 schema（带 `reason`）、权限校验、脱敏摘要和事件持久化，
+  再到 `server/agentToolPresentation.ts` 补上调用中/完成两句文案，并在 `shared/agentActivity.ts` 与 `client/src/i18n/*` 加对应 key。
+- **改 Agent 说话方式**：只改 `server/agentPersona.ts`；安全边界那几条是 prompt injection 防线的一部分，改动前先看 `server/knowledge/prompt-injection-defense.md`。
 - **加流式能力**：在 `server/chatStream.ts` 扩展 SSE payload，并同步更新聊天页事件处理。
 - **改 Agent Run schema**：修改 `agent_runs`、`agent_run_steps`、`agent_run_events`、`agent_tool_invocations` 或 `agent_tool_effects` 后必须执行 `pnpm db:generate` 与 `pnpm db:migrate`。
 

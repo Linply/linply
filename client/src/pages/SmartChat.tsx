@@ -129,12 +129,16 @@ const appendAgentActivity = (
   if (event.type === "final") return items;
 
   if (event.type === "tool_result") {
+    // `callId` pairs a result with its own call; the tool-name match is only a
+    // fallback for runs recorded before call ids were emitted.
     const matchingIndex = items.findLastIndex(
       item =>
         item.type === "activity" &&
         item.event.type === "tool_call" &&
-        item.event.toolName === event.toolName &&
-        !item.result
+        !item.result &&
+        (event.callId
+          ? item.event.callId === event.callId
+          : item.event.toolName === event.toolName)
     );
     if (matchingIndex >= 0) {
       return items.map((item, index) =>
@@ -148,7 +152,7 @@ const appendAgentActivity = (
   return [
     ...items,
     {
-      id: `activity-${items.length}-${event.type}`,
+      id: event.callId ?? `activity-${items.length}-${event.type}`,
       type: "activity",
       event,
     },
@@ -167,6 +171,49 @@ const appendStreamText = (
     ];
   }
   return [...items, { id: `text-${items.length}`, type: "text", content }];
+};
+
+/**
+ * The server sanitizes the reply before saving it, so a stream that leaked
+ * machinery ends with text the saved history will not have. Swapping the tail
+ * keeps the bubble and the stored conversation identical.
+ */
+const replaceStreamText = (
+  items: ChatStreamItem[],
+  finalContent: string
+): ChatStreamItem[] => {
+  const textIndexes = items.flatMap((item, index) =>
+    item.type === "text" ? [index] : []
+  );
+  const lastTextIndex = textIndexes.at(-1);
+  if (lastTextIndex === undefined) {
+    return [
+      ...items,
+      { id: `text-${items.length}`, type: "text", content: finalContent },
+    ];
+  }
+
+  const precedingText = textIndexes
+    .slice(0, -1)
+    .map(index => {
+      const item = items[index];
+      return item?.type === "text" ? item.content : "";
+    })
+    .join("");
+
+  if (!finalContent.startsWith(precedingText)) {
+    return [
+      ...items.filter(item => item.type !== "text"),
+      { id: "text-final", type: "text", content: finalContent },
+    ];
+  }
+
+  const tail = finalContent.slice(precedingText.length);
+  return items.map((item, index) =>
+    index === lastTextIndex && item.type === "text"
+      ? { ...item, content: tail }
+      : item
+  );
 };
 
 const groupStreamItems = (items: ChatStreamItem[]): ChatRenderGroup[] =>
@@ -491,8 +538,16 @@ export default function SmartChat() {
           Math.round((quotaSnapshot?.remainingTokens ?? 0) / 1000)
         )
       : null;
-  const assistantIsStreaming = messages.some(
+  /**
+   * The typing line only stands in for text that has not arrived yet — once
+   * tokens are streaming, the caret at the end of the reply says the same thing
+   * without a second indicator competing with it.
+   */
+  const streamingAssistant = messages.findLast(
     message => message.role === "assistant" && message.isStreaming
+  );
+  const showTypingIndicator = Boolean(
+    streamingAssistant && !streamingAssistant.content
   );
 
   const updateAssistant = (
@@ -605,9 +660,17 @@ export default function SmartChat() {
 
       if (payload.type === "done") {
         receivedDone = true;
+        const finalContent =
+          typeof payload.finalContent === "string"
+            ? payload.finalContent
+            : undefined;
         updateAssistant(assistantId, message => ({
           ...message,
           isStreaming: false,
+          content: finalContent ?? message.content,
+          streamItems: finalContent
+            ? replaceStreamText(message.streamItems ?? [], finalContent)
+            : message.streamItems,
           runStats: payload.stats
             ? {
                 ...payload.stats,
@@ -959,6 +1022,12 @@ export default function SmartChat() {
               <h2 className="mt-4 text-lg font-semibold text-foreground">
                 {t.chat.emptyTitle}
               </h2>
+              {/* The agent opens in its own words, exactly as a customer sees it. */}
+              {workspace?.greeting?.trim() ? (
+                <p className="mt-3 max-w-md text-balance text-sm leading-6 text-foreground">
+                  {workspace.greeting.trim()}
+                </p>
+              ) : null}
               <p className="mt-1.5 max-w-sm text-sm leading-6 text-muted-foreground">
                 {t.chat.emptySubtitle}
               </p>
@@ -1059,7 +1128,7 @@ export default function SmartChat() {
                             disabled={isLoading}
                           >
                             <RefreshCcw className="mr-2 h-4 w-4" />
-                            重试
+                            {t.chat.retry}
                           </Button>
                         ) : null}
                       </div>
@@ -1067,7 +1136,7 @@ export default function SmartChat() {
 
                     {message.retrieval?.degraded ? (
                       <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                        知识库检索已降级为关键词匹配，答案可能需要人工确认。
+                        {t.chat.degraded}
                       </div>
                     ) : null}
 
@@ -1233,7 +1302,7 @@ export default function SmartChat() {
                             }
                           >
                             <ExternalLink className="mr-2 h-4 w-4" />
-                            查看 {getReferencedTicketId(message)} 工单详情
+                            {t.chat.openTicket(getReferencedTicketId(message)!)}
                           </Button>
                         ) : shouldShowCreateTicket(message) ? (
                           <Button
@@ -1243,7 +1312,7 @@ export default function SmartChat() {
                             onClick={() => openTicketDraft(message)}
                           >
                             <ClipboardList className="mr-2 h-4 w-4" />
-                            转工单
+                            {t.chat.convertToTicket}
                           </Button>
                         ) : null}
                       </div>
@@ -1255,7 +1324,10 @@ export default function SmartChat() {
           )}
           {messages.length > 0 ? (
             <div className="!mt-0 min-h-16 pl-10 pt-2">
-              {assistantIsStreaming ? <AgentWorkingStatus visible /> : null}
+              <AgentWorkingStatus
+                visible={showTypingIndicator}
+                agentName={agentName}
+              />
             </div>
           ) : null}
           </div>

@@ -1,4 +1,7 @@
-import type { AgentStep } from "@/components/agentTimeline";
+import {
+  formatAgentActivity,
+  type AgentStep,
+} from "@/components/agentTimeline";
 import ToolArgsViewer from "@/components/ToolArgsViewer";
 import ToolErrorPanel from "@/components/ToolErrorPanel";
 import ToolResultViewer from "@/components/ToolResultViewer";
@@ -9,6 +12,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useT } from "@/i18n";
 import {
   AlertCircle,
   CheckCircle2,
@@ -24,14 +28,6 @@ type ToolCallCardProps = {
   defaultOpen?: boolean;
 };
 
-const stepLabels: Record<AgentStep["stepType"], string> = {
-  thinking: "分析中",
-  tool_call: "工具调用",
-  tool_result: "执行结果",
-  final: "最终回答",
-  error: "执行失败",
-};
-
 const stepIcon = (step: AgentStep) => {
   if (step.stepType === "thinking") return Search;
   if (step.stepType === "tool_result") return CheckCircle2;
@@ -44,13 +40,25 @@ export default function ToolCallCard({
   step,
   defaultOpen = false,
 }: ToolCallCardProps) {
+  const t = useT();
   const [open, setOpen] = useState(defaultOpen);
   const Icon = stepIcon(step);
   const hasDetails = Boolean(
     step.argsSummary || step.resultSummary || step.content || step.error
   );
+  const stepLabel = t.agentRun.stepLabels[step.stepType];
+  const toolLabel = step.toolName
+    ? (t.agentToolLabels[step.toolName] ?? step.toolName)
+    : undefined;
+  /** The same line the customer saw in chat, so the two views agree. */
   const title =
-    step.toolName || step.content || step.error || stepLabels[step.stepType];
+    formatAgentActivity(step.metadata?.activity, t.agentActivity, {
+      label: toolLabel,
+    }) ||
+    step.toolName ||
+    step.content ||
+    step.error ||
+    stepLabel;
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -71,7 +79,7 @@ export default function ToolCallCard({
                   {title}
                 </span>
                 <span className="mt-1 flex items-center gap-2">
-                  <Badge variant="outline">{stepLabels[step.stepType]}</Badge>
+                  <Badge variant="outline">{stepLabel}</Badge>
                   {step.toolName ? (
                     <span className="truncate text-xs text-muted-foreground">
                       {step.toolName}
@@ -93,13 +101,17 @@ export default function ToolCallCard({
           <div className="space-y-3 border-t border-border p-3">
             {step.argsSummary ? (
               <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">参数摘要</p>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  {t.agentRun.stepLabels.tool_call}
+                </p>
                 <ToolArgsViewer value={step.argsSummary} />
               </div>
             ) : null}
             {step.resultSummary ? (
               <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">结果摘要</p>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  {t.agentRun.stepLabels.tool_result}
+                </p>
                 <ToolResultViewer value={step.resultSummary} />
               </div>
             ) : null}

@@ -29,6 +29,28 @@ const strictBoolean = (value: string | undefined, fallback: boolean) => {
   return fallback;
 };
 
+const parseList = (value: string | undefined) =>
+  (value ?? "")
+    .split(",")
+    .map(entry => entry.trim())
+    .filter(Boolean);
+
+/** Parses `key=number,key=number`, dropping anything that is not a positive number. */
+const parseNumberMap = (value: string | undefined) =>
+  Object.fromEntries(
+    parseList(value)
+      .map(entry => {
+        const separator = entry.lastIndexOf("=");
+        if (separator <= 0) return null;
+        const key = entry.slice(0, separator).trim();
+        const parsed = Number(entry.slice(separator + 1).trim());
+        return key && Number.isFinite(parsed) && parsed > 0
+          ? ([key, Math.floor(parsed)] as const)
+          : null;
+      })
+      .filter((entry): entry is readonly [string, number] => entry !== null)
+  ) as Record<string, number>;
+
 const MAX_TOKEN_QUOTA = 2_147_483_647;
 
 export const ENV = {
@@ -136,9 +158,19 @@ export const ENV = {
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-5.5",
+  /**
+   * Pins what a workspace may choose. Empty means "ask the endpoint", which is
+   * the honest answer for a plain OpenAI key; proxies that only forward a few
+   * models should list them here instead.
+   */
+  openAiModels: parseList(process.env.OPENAI_MODELS),
   openAiContextWindowTokens: Math.max(
     0,
     Number(process.env.OPENAI_CONTEXT_WINDOW_TOKENS ?? 272_000)
+  ),
+  /** `gpt-5.5=272000,gpt-4.1=1047576` — only for models worth showing a figure for. */
+  openAiModelContextWindows: parseNumberMap(
+    process.env.OPENAI_MODEL_CONTEXT_WINDOWS
   ),
   openAiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   openAiEmbeddingBaseUrl:

@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "agentModel" varchar(128);

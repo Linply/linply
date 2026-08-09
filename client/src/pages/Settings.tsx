@@ -1,10 +1,17 @@
 import AppShell from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useWorkspace } from "@/hooks/useWorkspace";
-import { useT, type Dictionary } from "@/i18n";
+import { useIntlLocale, useT, type Dictionary } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Save } from "lucide-react";
@@ -13,6 +20,9 @@ import { toast } from "sonner";
 
 const TONE_VALUES = ["friendly", "professional", "concise"] as const;
 type Tone = (typeof TONE_VALUES)[number];
+
+/** Radix needs a non-empty value, and "" is how the workspace stores "default". */
+const FOLLOW_DEPLOYMENT = "__default__";
 
 export const buildToneOptions = (t: Dictionary) =>
   [
@@ -71,13 +81,16 @@ export default function Settings() {
   const { workspace, loading } = useWorkspace();
   const t = useT();
   const toneOptions = buildToneOptions(t);
+  const intlLocale = useIntlLocale();
   const utils = trpc.useUtils();
   const update = trpc.workspace.update.useMutation();
+  const { data: modelCatalog } = trpc.workspace.listModels.useQuery();
 
   const [form, setForm] = useState({
     name: "",
     agentName: "",
     agentTone: "friendly" as Tone,
+    agentModel: "",
     greeting: "",
     fallbackReply: "",
     businessContext: "",
@@ -92,6 +105,7 @@ export default function Settings() {
       agentName: workspace.agentName,
       agentTone: (TONE_VALUES.find(value => value === workspace.agentTone) ??
         "friendly") as Tone,
+      agentModel: workspace.agentModel ?? "",
       greeting: workspace.greeting ?? "",
       fallbackReply: workspace.fallbackReply ?? "",
       businessContext: workspace.businessContext ?? "",
@@ -116,6 +130,7 @@ export default function Settings() {
         name: form.name.trim() || workspace.name,
         agentName: form.agentName.trim() || "智能客服",
         agentTone: form.agentTone,
+        agentModel: form.agentModel || null,
         greeting: form.greeting.trim() || null,
         fallbackReply: form.fallbackReply.trim() || null,
         businessContext: form.businessContext.trim() || null,
@@ -197,6 +212,64 @@ export default function Settings() {
               ))}
             </div>
           </Field>
+        </Section>
+
+        <Section
+          title={t.settings.modelTitle}
+          description={t.settings.modelDescription}
+        >
+          {modelCatalog && modelCatalog.models.length === 0 ? (
+            <p className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm leading-6 text-muted-foreground">
+              {t.settings.modelUnavailable}
+            </p>
+          ) : (
+            <Field
+              label={t.settings.modelLabel}
+              hint={
+                form.agentModel ? undefined : t.settings.modelDefaultHint
+              }
+            >
+              <Select
+                value={form.agentModel || FOLLOW_DEPLOYMENT}
+                onValueChange={value =>
+                  setForm(state => ({
+                    ...state,
+                    agentModel: value === FOLLOW_DEPLOYMENT ? "" : value,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-full sm:max-w-md">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={FOLLOW_DEPLOYMENT}>
+                    {t.settings.modelDefaultOption(
+                      modelCatalog?.models.find(option => option.isDefault)
+                        ?.label ?? "—"
+                    )}
+                  </SelectItem>
+                  {(modelCatalog?.models ?? []).map(option => (
+                    <SelectItem key={option.id} value={option.id}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate">{option.label}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {t.settings.modelTiers[option.tier]}
+                          {option.contextWindowTokens
+                            ? ` · ${t.settings.modelContextWindow(
+                                new Intl.NumberFormat(intlLocale, {
+                                  notation: "compact",
+                                  maximumFractionDigits: 0,
+                                }).format(option.contextWindowTokens)
+                              )}`
+                            : ""}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
         </Section>
 
         <Section

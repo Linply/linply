@@ -277,6 +277,12 @@ export const zh: Dictionary = {
     quotaExhausted: "今日 Credit 已用尽，额度重置后可继续",
     quotaLow: (credits: number) => `Credit 余额偏低，剩余 ${credits} Credit`,
     citations: (count: number) => `回答依据 · ${count} 条知识`,
+    typing: (agentName: string) => `${agentName} 正在输入`,
+    showActivityDetails: "展开详情",
+    retry: "再试一次",
+    degraded: "这次是按关键词找的，答案建议再人工确认一下。",
+    convertToTicket: "转成工单",
+    openTicket: (id: number) => `查看工单 #${id}`,
   },
 
   publicChat: {
@@ -314,6 +320,21 @@ export const zh: Dictionary = {
       "关闭后，公开的对话页面会立即失效，已接入的 Telegram 不受影响。",
     shareToggle: "允许通过分享链接免登录对话",
     saveSettings: "保存设置",
+    modelTitle: "模型",
+    modelDescription:
+      "决定谁来写这些回答。强模型更能处理绕来绕去的问题，小模型回得更快、每次对话更便宜。",
+    modelLabel: "回答用的模型",
+    modelDefaultOption: (model: string) => `跟随部署配置（${model}）`,
+    modelDefaultHint: "用这个部署当前配置的模型",
+    modelContextWindow: (tokens: string) => `${tokens} 上下文`,
+    modelUnavailable:
+      "列不出模型——这个部署没有配置 OPENAI_API_KEY，客服现在也答不了话。",
+    modelTiers: {
+      flagship: "推理最强",
+      balanced: "均衡",
+      fast: "最快最便宜",
+      reasoning: "推理模型",
+    },
   },
 
   plans: {
@@ -350,7 +371,8 @@ export const zh: Dictionary = {
     requested: (plan: string) => `已记录升级到${plan}的意向，我们会联系你`,
     cancelRequest: "取消申请",
     requestFailed: "记录申请失败",
-    limitReached: (limit: string) => `已达到套餐上限（${limit}），升级后可继续。`,
+    limitReached: (limit: string) =>
+      `已达到套餐上限（${limit}），升级后可继续。`,
   },
 
   credits: {
@@ -396,5 +418,50 @@ export const zh: Dictionary = {
     notFound: "Agent Run 不存在",
     notFoundHint: "请检查 Run ID 是否完整，或它是否属于当前工作区",
     backToChat: "返回试聊调试",
+    noArgs: "没有参数",
+    noResult: "还没有结果",
+    stepLabels: {
+      thinking: "思考",
+      tool_call: "工具调用",
+      tool_result: "执行结果",
+      final: "最终回答",
+      error: "执行失败",
+    },
+  },
+
+  agentActivity: {
+    thinking: () => "正在看你的问题",
+    "searchKnowledge.running": ({ query }) =>
+      query ? `正在查「${query}」` : "正在查知识库",
+    "searchKnowledge.done": ({ count = 0 }) => `找到 ${count} 条相关内容`,
+    "searchKnowledge.empty": () => "知识库里没有相关内容",
+    "createTicket.running": ({ query }) =>
+      query ? `正在创建工单：${query}` : "正在创建工单",
+    "createTicket.done": ({ ticketId }) =>
+      ticketId ? `工单 #${ticketId} 已创建` : "工单已创建",
+    "createTicket.replayed": ({ ticketId }) =>
+      ticketId ? `工单 #${ticketId} 之前已经建过了` : "工单之前已经建过了",
+    "listTickets.running": () => "正在查你的工单",
+    "listTickets.done": ({ count = 0 }) => `找到 ${count} 个工单`,
+    "listTickets.empty": () => "没有找到工单",
+    "getTicketById.running": ({ ticketId }) =>
+      ticketId ? `正在查工单 #${ticketId}` : "正在查工单详情",
+    "getTicketById.done": ({ ticketId }) =>
+      ticketId ? `已读取工单 #${ticketId}` : "已读取工单详情",
+    "addTicketNote.running": ({ ticketId }) =>
+      ticketId ? `正在给工单 #${ticketId} 写备注` : "正在写工单备注",
+    "addTicketNote.done": ({ ticketId }) =>
+      ticketId ? `备注已写到工单 #${ticketId}` : "备注已添加",
+    "tool.running": ({ label }) => (label ? `正在${label}` : "正在处理"),
+    "tool.done": ({ label }) => (label ? `${label}完成` : "完成"),
+    "tool.error": ({ label }) => (label ? `${label}没成功` : "这一步没完成"),
+  },
+
+  agentToolLabels: {
+    searchKnowledge: "知识库检索",
+    createTicket: "创建工单",
+    listTickets: "工单列表",
+    getTicketById: "工单详情",
+    addTicketNote: "工单备注",
   },
 };
