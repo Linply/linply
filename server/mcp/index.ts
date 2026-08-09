@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../_core/loadEnv";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { getMcpUserContext } from "./auth";

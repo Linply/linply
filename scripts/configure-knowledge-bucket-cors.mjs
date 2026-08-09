@@ -1,4 +1,6 @@
-import "dotenv/config";
+import { config } from "dotenv";
+
+config({ path: [".env.local", ".env"] });
 import { PutBucketCorsCommand, S3Client } from "@aws-sdk/client-s3";
 
 const required = [

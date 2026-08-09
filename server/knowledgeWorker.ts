@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./_core/loadEnv";
 import { createServer } from "node:http";
 import { Worker } from "bullmq";
 import { ENV } from "./_core/env";
