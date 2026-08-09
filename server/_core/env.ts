@@ -60,10 +60,6 @@ export const ENV = {
     (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000"),
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-  demoAccountEmail:
-    process.env.DEMO_ACCOUNT_EMAIL ?? process.env.DEMO_ADMIN_EMAIL ?? "",
-  demoAccountPassword:
-    process.env.DEMO_ACCOUNT_PASSWORD ?? process.env.DEMO_ADMIN_PASSWORD ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
   queueRedisUrl: process.env.QUEUE_REDIS_URL ?? process.env.REDIS_URL ?? "",
   knowledgeStorageEndpoint: process.env.AWS_ENDPOINT_URL ?? "",

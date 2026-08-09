@@ -147,36 +147,6 @@ export async function loginWithPassword(input: {
   return toPublicUser({ ...account.user, lastSignedIn: new Date() });
 }
 
-export const isDemoAccountConfigured = () =>
-  Boolean(ENV.demoAccountEmail && ENV.demoAccountPassword);
-
-/**
- * One-click entry into a pre-seeded workspace. It is an ordinary account with
- * no elevated rights — it just skips the sign-up form for people trying the
- * product out.
- */
-export async function loginAsDemoAccount(req: Request, res: Response) {
-  if (!isDemoAccountConfigured()) {
-    throw ForbiddenError("体验账号入口未配置");
-  }
-
-  const account = await db.getPasswordAccountByEmail(
-    normalizeEmail(ENV.demoAccountEmail)
-  );
-  if (!account) {
-    throw ForbiddenError("体验账号不可用");
-  }
-
-  return loginWithPassword(
-    {
-      email: ENV.demoAccountEmail,
-      password: ENV.demoAccountPassword,
-    },
-    req,
-    res
-  );
-}
-
 export async function authenticateRequest(req: Request) {
   const token = getSessionToken(req);
   if (!token) throw ForbiddenError("Invalid session");

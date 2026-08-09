@@ -73,7 +73,7 @@ pnpm dev
 - 登录：http://localhost:3000/login
 
 所有账号都是同一类：注册即拥有自己的工作区。`pnpm db:seed` 可灌入一份带知识库和工单的示例工作区，
-`pnpm auth:create-user` 可在命令行直接开一个账号（用于预置体验入口）。
+`pnpm auth:create-user` 可在命令行直接开一个账号（跳过注册表单）。
 
 ## 环境变量
 
@@ -92,7 +92,6 @@ cp .env.example .env
 - `KNOWLEDGE_UPLOAD_PART_SIZE_MB=16`：浏览器 multipart 分片基准大小；超大文件会自动增大分片以满足 S3 最多 10,000 片的约束。
 - `SESSION_CACHE_TTL_MS=60000`：认证用户与权限快照的短 TTL，上限 5 分钟，不改变数据库中的 30 天绝对 Session 到期时间。角色降权或禁用用户时应同时撤销其 Session，而不是依赖 TTL 自然过期。
 - `SEED_USER_EMAIL` / `SEED_USER_PASSWORD`：`pnpm db:seed` 与 `pnpm auth:create-user` 使用的示例账号。
-- `DEMO_ACCOUNT_EMAIL` / `DEMO_ACCOUNT_PASSWORD`：可选，登录页「一键进入体验账号」；账号需先存在，无任何特权。
 - `APP_BASE_URL`：应用公网 origin。用于 OAuth callback，同时决定 Telegram 用 webhook 还是轮询——
   只有公网 HTTPS 地址才会注册 webhook，本地开发自动回落到 `getUpdates` 轮询。
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：Google OAuth Web Client 凭证；缺失时入口自动隐藏。
@@ -214,12 +213,11 @@ worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，�
 
 1. 设置生产环境变量，尤其是 `DATABASE_URL`、`APP_BASE_URL`、LLM 和 embedding 配置。
 2. 执行 `pnpm db:migrate`。
-3. 如需登录页的体验入口，运行一次 `pnpm auth:create-user` 并配置 `DEMO_ACCOUNT_*`。
-4. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
-5. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-6. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
-7. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
-8. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查：邮箱登录、Google 登录、**跨工作区隔离**、
+3. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
+4. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
+5. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
+6. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
+7. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查：邮箱登录、Google 登录、**跨工作区隔离**、
    分片上传、知识库解析、Agent Run 租约恢复，以及 Telegram webhook（`${APP_BASE_URL}/api/channels/telegram/:secret`）。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。
