@@ -41,6 +41,8 @@ type SsePayload =
       llmModel?: string;
       stats?: AgentRunStats;
       attemptCount?: number;
+      /** Present only when the saved reply differs from the streamed deltas. */
+      finalContent?: string;
     }
   | {
       type: "error";

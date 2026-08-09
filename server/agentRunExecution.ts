@@ -14,6 +14,7 @@ import {
 } from "./agentPolicy";
 import * as db from "./db";
 import { streamAgentChatResponse } from "./agentService";
+import { resolveWorkspaceModel } from "./agentModelCatalog";
 import type { ConversationScope } from "./workspace";
 
 import { TokenQuotaExceededError } from "./tokenQuota";
@@ -59,6 +60,9 @@ export async function enqueueAgentRun(input: {
 }) {
   const telemetry = getActiveTraceContext();
   const authorization = deriveAgentWriteAuthorization(input.content);
+  // Recorded up front so a queued run already shows which model will answer.
+  const workspace = await db.getWorkspaceById(input.scope.workspaceId);
+  const { model } = resolveWorkspaceModel(workspace?.agentModel);
   const run = await db.createAgentRun({
     workspaceId: input.scope.workspaceId,
     userId: input.scope.ownerUserId,
@@ -68,7 +72,7 @@ export async function enqueueAgentRun(input: {
     input: input.content,
     status: "queued",
     llmProvider: "openai-agents",
-    llmModel: ENV.openAiModel,
+    llmModel: model,
     retryOfRunId: input.retryOfRunId,
     traceId: telemetry?.traceId,
     metadata: {
@@ -174,9 +178,14 @@ async function executeAgentRunInternal(
     });
     await appendAgentStreamEvent(run.id, "done", {
       llmProvider: "openai-agents",
-      llmModel: ENV.openAiModel,
+      llmModel: result.llmModel,
       stats: { ...result.runStats, usageState: "actual" },
       attemptCount: run.attemptCount,
+      // Only sent when the streamed text differs from what was saved, so the
+      // bubble the customer is looking at matches the stored conversation.
+      ...(result.replacedStreamedContent
+        ? { finalContent: result.assistantContent }
+        : {}),
     });
   } catch (error) {
     const message = getPublicAgentErrorMessage(

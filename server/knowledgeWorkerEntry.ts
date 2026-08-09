@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./_core/loadEnv";
 import { shutdownTelemetry, startTelemetry } from "./_core/telemetry";
 
 async function bootstrap() {

@@ -127,6 +127,13 @@
       "when": 1786197347629,
       "tag": "0017_previous_tomorrow_man",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786235516829,
+      "tag": "0018_bouncy_angel",
+      "breakpoints": true
     }
   ]
 }

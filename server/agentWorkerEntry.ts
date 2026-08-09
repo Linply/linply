@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./_core/loadEnv";
 import { configureHostedAgentTracing } from "./_core/agentTracing";
 import { shutdownTelemetry, startTelemetry } from "./_core/telemetry";
 

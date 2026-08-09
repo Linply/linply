@@ -37,6 +37,10 @@ import {
 } from "./knowledge/queue";
 import { ENV } from "./_core/env";
 import {
+  isSelectableModelId,
+  listSelectableModels,
+} from "./agentModelCatalog";
+import {
   clearSessionCookie,
   isDemoAccountConfigured,
   loginAsDemoAccount,
@@ -282,6 +286,7 @@ export const appRouter = router({
         name: ctx.workspace.name,
         agentName: ctx.workspace.agentName,
         agentTone: ctx.workspace.agentTone,
+        agentModel: ctx.workspace.agentModel,
         greeting: ctx.workspace.greeting,
         fallbackReply: ctx.workspace.fallbackReply,
         businessContext: ctx.workspace.businessContext,
@@ -306,6 +311,8 @@ export const appRouter = router({
           agentTone: z
             .enum(["professional", "friendly", "concise"])
             .optional(),
+          /** null means "follow the deployment default". */
+          agentModel: z.string().trim().max(128).nullable().optional(),
           greeting: z.string().trim().max(500).nullable().optional(),
           fallbackReply: z.string().trim().max(500).nullable().optional(),
           businessContext: z.string().trim().max(2_000).nullable().optional(),
@@ -313,10 +320,24 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        // Checked here rather than at run time: a workspace may only point at a
+        // model this deployment's key can actually reach.
+        if (input.agentModel && !(await isSelectableModelId(input.agentModel))) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "该模型不可用，请从列表中重新选择",
+          });
+        }
         const workspace = await db.updateWorkspace(ctx.workspace.id, input);
         if (!workspace) throw new TRPCError({ code: "NOT_FOUND" });
         return { success: true as const };
       }),
+
+    /** What this deployment's key can actually run, for the settings picker. */
+    listModels: workspaceProcedure.query(async () => ({
+      models: await listSelectableModels(),
+      configured: Boolean(ENV.openAiApiKey),
+    })),
 
     setOnboardingStep: workspaceProcedure
       .input(z.object({ step: z.enum(ONBOARDING_STEPS) }))

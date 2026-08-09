@@ -1,4 +1,7 @@
-import type { AgentEvent } from "@/components/agentTimeline";
+import {
+  formatAgentActivity,
+  type AgentEvent,
+} from "@/components/agentTimeline";
 import ToolArgsViewer from "@/components/ToolArgsViewer";
 import ToolResultViewer from "@/components/ToolResultViewer";
 import {
@@ -6,58 +9,61 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useT } from "@/i18n";
+import type { AgentActivityIcon } from "@shared/agentActivity";
 import {
+  AlertCircle,
   BookOpen,
-  CheckCircle2,
   ChevronDown,
   ClipboardList,
   FileSearch,
-  Hammer,
   List,
   MessageSquarePlus,
   Search,
   Wrench,
+  type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
 
 export type InlineAgentActivityItem = {
   id: string;
+  /** The `thinking` or `tool_call` event that opened this step. */
   event: AgentEvent;
+  /** The matching `tool_result`, once it arrives. */
   result?: AgentEvent;
 };
 
 type InlineAgentActivityProps = {
   items: InlineAgentActivityItem[];
-  visible: boolean;
   runCompleted?: boolean;
 };
 
-const toolLabels: Record<string, string> = {
-  searchKnowledge: "检索知识库",
-  createTicket: "创建工单",
-  listTickets: "查询工单列表",
-  getTicketById: "读取工单详情",
-  addTicketNote: "添加工单备注",
+const ACTIVITY_ICONS: Record<AgentActivityIcon, LucideIcon> = {
+  thinking: Search,
+  knowledge: BookOpen,
+  ticketNew: ClipboardList,
+  ticketList: List,
+  ticketDetail: FileSearch,
+  ticketNote: MessageSquarePlus,
+  tool: Wrench,
 };
 
-const getActivityTitle = (item: InlineAgentActivityItem) => {
-  if (item.event.type === "thinking") {
-    return item.event.message || "正在分析问题";
-  }
-  if (item.event.toolName) {
-    return toolLabels[item.event.toolName] || item.event.toolName;
-  }
-  return item.result ? "步骤已完成" : "正在执行";
+/** Runs recorded before the activity payload existed still need an icon. */
+const LEGACY_TOOL_ICONS: Record<string, AgentActivityIcon> = {
+  searchKnowledge: "knowledge",
+  createTicket: "ticketNew",
+  listTickets: "ticketList",
+  getTicketById: "ticketDetail",
+  addTicketNote: "ticketNote",
 };
 
-const getActivityIcon = (item: InlineAgentActivityItem) => {
-  if (item.event.type === "thinking") return Search;
-  if (item.event.toolName === "searchKnowledge") return BookOpen;
-  if (item.event.toolName === "createTicket") return ClipboardList;
-  if (item.event.toolName === "listTickets") return List;
-  if (item.event.toolName === "getTicketById") return FileSearch;
-  if (item.event.toolName === "addTicketNote") return MessageSquarePlus;
-  return Wrench;
+const iconFor = (item: InlineAgentActivityItem) => {
+  const name =
+    item.event.activity?.icon ??
+    (item.event.type === "thinking"
+      ? "thinking"
+      : (LEGACY_TOOL_ICONS[item.event.toolName ?? ""] ?? "tool"));
+  return ACTIVITY_ICONS[name] ?? Wrench;
 };
 
 function ActivityRow({
@@ -69,11 +75,39 @@ function ActivityRow({
   last: boolean;
   runCompleted: boolean;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
-  const Icon = getActivityIcon(item);
-  const complete =
+  const Icon = iconFor(item);
+
+  const toolLabel = item.event.toolName
+    ? (t.agentToolLabels[item.event.toolName] ?? item.event.toolName)
+    : undefined;
+  const callTitle =
+    formatAgentActivity(item.event.activity, t.agentActivity, {
+      label: toolLabel,
+    }) ||
+    item.event.message ||
+    toolLabel ||
+    "";
+  const resultTitle = item.result
+    ? formatAgentActivity(item.result.activity, t.agentActivity, {
+        label: toolLabel,
+      })
+    : "";
+
+  const failed = item.result?.activity?.phase === "error";
+  const done =
     Boolean(item.result) ||
     (item.event.type === "thinking" && (runCompleted || !last));
+  /**
+   * When the model wrote its own line, that line stays put and the outcome
+   * trails it — the row reads as one sentence instead of being replaced
+   * mid-flight.
+   */
+  const keepsIntent = Boolean(item.event.activity?.reason);
+  const title = done && !keepsIntent && resultTitle ? resultTitle : callTitle;
+  const meta = done && keepsIntent ? resultTitle : "";
+
   const hasDetails = Boolean(
     item.event.argsSummary ||
       item.event.resultSummary ||
@@ -83,47 +117,57 @@ function ActivityRow({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="relative pl-7">
+      <div className="relative pl-6">
         {!last ? (
           <span
             aria-hidden="true"
-            className="absolute bottom-[-0.5rem] left-[0.1875rem] top-3 w-px bg-muted-foreground/60"
+            className="absolute bottom-[-0.375rem] left-[0.4375rem] top-6 w-px bg-border"
           />
         ) : null}
         <span
           aria-hidden="true"
-          className={`absolute left-0 top-[0.5625rem] size-1.5 rounded-full ring-2 ring-background ${
-            complete ? "bg-muted-foreground" : "bg-blue-500"
+          className={`absolute left-0 top-1.5 flex size-3.5 items-center justify-center ${
+            failed ? "text-destructive" : "text-muted-foreground/70"
           }`}
         >
-          {!complete ? (
-            <span className="absolute inset-0 animate-ping rounded-full bg-blue-400 opacity-40 motion-reduce:hidden" />
-          ) : null}
+          <Icon className="size-3.5" />
         </span>
         <CollapsibleTrigger asChild>
           <button
             type="button"
             disabled={!hasDetails}
-            className="group flex min-h-6 w-full items-center gap-2 py-0.5 text-left text-[13px] leading-5 text-muted-foreground disabled:cursor-default"
-            aria-label={`${getActivityTitle(item)}${hasDetails ? "，展开详情" : ""}`}
+            className="group flex min-h-6 w-full items-center gap-1.5 py-0.5 text-left text-[13px] leading-5 disabled:cursor-default"
+            aria-label={
+              hasDetails ? `${title} — ${t.chat.showActivityDetails}` : title
+            }
           >
-            <Icon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 truncate group-hover:text-foreground">
-              {getActivityTitle(item)}
+            <span
+              className={`min-w-0 truncate transition-colors ${
+                failed ? "text-destructive" : "text-muted-foreground"
+              } ${!done && !failed ? "agent-activity-pending" : ""} ${
+                hasDetails ? "group-hover:text-foreground" : ""
+              }`}
+            >
+              {title}
             </span>
-            {complete ? (
-              <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />
+            {meta ? (
+              <span className="shrink-0 truncate text-muted-foreground/70">
+                · {meta}
+              </span>
+            ) : null}
+            {failed ? (
+              <AlertCircle className="size-3.5 shrink-0 text-destructive" />
             ) : null}
             {hasDetails ? (
               <ChevronDown
-                className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${
-                  open ? "rotate-180" : ""
+                className={`size-3.5 shrink-0 text-muted-foreground/0 transition-all duration-200 group-hover:text-muted-foreground/70 ${
+                  open ? "rotate-180 text-muted-foreground/70" : ""
                 }`}
               />
             ) : null}
           </button>
         </CollapsibleTrigger>
-        <CollapsibleContent>
+        <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
           <div className="space-y-2 pb-2 pt-1 text-xs text-muted-foreground">
             {item.event.argsSummary ? (
               <ToolArgsViewer value={item.event.argsSummary} />
@@ -145,46 +189,47 @@ function ActivityRow({
   );
 }
 
-export function AgentWorkingStatus({ visible }: { visible: boolean }) {
+/**
+ * The whole of the "nothing to show yet" state: one line, in the place the
+ * answer will appear, the same height as a line of reply text. The answer
+ * replaces it in situ — nothing is added or removed around it, so a view
+ * pinned to the bottom does not jump when the first token lands.
+ */
+export function AgentWorkingLine({ agentName }: { agentName: string }) {
+  const t = useT();
+
   return (
     <div
-      className={`grid transition-[grid-template-rows,opacity,margin] duration-300 ease-out motion-reduce:transition-none ${
-        visible
-          ? "mt-2 grid-rows-[1fr] opacity-100"
-          : "pointer-events-none mt-0 grid-rows-[0fr] opacity-0"
-      }`}
-      aria-hidden={!visible}
-      inert={!visible}
+      className="flex h-7 items-center gap-1.5 text-[13px] leading-5 text-muted-foreground"
+      role="status"
+      aria-label={t.chat.typing(agentName)}
     >
-      <div className="min-h-0 overflow-hidden">
-        <div className="flex min-h-6 items-center gap-2 py-0.5 text-[13px] leading-5 text-muted-foreground">
-          <Hammer className="size-4 shrink-0 animate-bounce text-muted-foreground motion-reduce:animate-none" />
-          <span>loading...</span>
-        </div>
-      </div>
+      <Search aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="agent-activity-pending">
+        {t.agentActivity.thinking({})}
+      </span>
     </div>
   );
 }
 
 export default function InlineAgentActivity({
   items,
-  visible,
   runCompleted = false,
 }: InlineAgentActivityProps) {
   if (items.length === 0) return null;
 
   return (
-    <div
-      className={`grid transition-[grid-template-rows,opacity,margin] duration-500 ease-out motion-reduce:transition-none ${
-        visible
-          ? "my-3 grid-rows-[1fr] opacity-100"
-          : "pointer-events-none my-0 grid-rows-[0fr] opacity-0"
-      }`}
-      aria-hidden={!visible}
-      inert={!visible}
-    >
-      <div className="min-h-0 overflow-hidden">
-        <div className="py-0.5">
+    /**
+     * No height transition here: rows arrive one at a time while the view is
+     * pinned to the bottom, and animating the container's height re-flows the
+     * whole thread after each one — which reads as the page bouncing.
+     *
+     * The small top margin keeps the first row roughly where the working line
+     * sat, so swapping one for the other barely moves anything.
+     */
+    <div className="mb-3 mt-1">
+      <div>
+        <div className="space-y-0.5">
           {items.map((item, index) => (
             <ActivityRow
               key={item.id}

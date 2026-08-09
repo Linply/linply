@@ -2,7 +2,7 @@ import postgres from "postgres";
 import dotenv from "dotenv";
 import { randomBytes, scrypt } from "node:crypto";
 
-dotenv.config();
+dotenv.config({ path: [".env.local", ".env"] });
 
 const DATABASE_URL = process.env.DATABASE_URL;
 

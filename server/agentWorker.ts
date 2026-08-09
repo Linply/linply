@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./_core/loadEnv";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { hostname } from "node:os";

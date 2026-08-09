@@ -1,5 +1,5 @@
 import { defineConfig } from "drizzle-kit";
-import "dotenv/config";
+import "./server/_core/loadEnv";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {

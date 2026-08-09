@@ -209,8 +209,19 @@ export default function PublicChat() {
 
           {sending ? (
             <div className="flex justify-start">
-              <div className="rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2.5">
-                <Spinner className="size-4" />
+              <div
+                className="flex items-center gap-1 rounded-2xl rounded-bl-sm bg-muted px-3.5 py-3.5"
+                role="status"
+                aria-label={t.chat.typing(agent.agentName)}
+              >
+                {[0, 1, 2].map(index => (
+                  <span
+                    key={index}
+                    aria-hidden="true"
+                    className="agent-typing-dot size-1.5 rounded-full bg-muted-foreground/70"
+                    style={{ animationDelay: `${index * 160}ms` }}
+                  />
+                ))}
               </div>
             </div>
           ) : null}

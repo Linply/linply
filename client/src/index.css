@@ -209,6 +209,65 @@
   }
 
   /**
+   * A step that is still running reads as "in motion" without a spinner: a slow
+   * highlight sweeps across the label, the way Cursor marks work in progress.
+   */
+  .agent-activity-pending {
+    background-image: linear-gradient(
+      100deg,
+      currentColor 0%,
+      currentColor 35%,
+      color-mix(in oklab, currentColor 30%, transparent) 50%,
+      currentColor 65%,
+      currentColor 100%
+    );
+    background-size: 250% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: agent-activity-sweep 2s linear infinite;
+  }
+
+  @keyframes agent-activity-sweep {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+
+  .agent-typing-dot {
+    animation: agent-typing-bounce 1.1s ease-in-out infinite;
+  }
+
+  @keyframes agent-typing-bounce {
+    0%,
+    60%,
+    100% {
+      opacity: 0.35;
+      transform: translateY(0);
+    }
+    30% {
+      opacity: 1;
+      transform: translateY(-0.1875rem);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-activity-pending {
+      background-image: none;
+      -webkit-text-fill-color: currentColor;
+      animation: none;
+    }
+
+    .agent-typing-dot {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+
+  /**
    * Custom container utility that centers content and adds responsive padding.
    *
    * This overrides Tailwind's default container behavior to:

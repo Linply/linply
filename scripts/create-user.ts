@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../server/_core/loadEnv";
 import { createPasswordUser, getUserByEmail } from "../server/db";
 import { hashPassword, normalizeEmail } from "../server/_core/auth";
 import { requireWorkspaceForUser } from "../server/workspace";
