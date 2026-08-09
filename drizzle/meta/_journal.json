@@ -134,6 +134,13 @@
       "when": 1786235516829,
       "tag": "0018_bouncy_angel",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786272060892,
+      "tag": "0019_knowledge_workspace_guard",
+      "breakpoints": true
     }
   ]
 }

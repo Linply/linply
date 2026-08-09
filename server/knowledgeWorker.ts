@@ -16,6 +16,7 @@ import {
   type KnowledgeParseJob,
 } from "./knowledge/queue";
 import { abortMultipartUpload } from "./knowledge/storage";
+import { summarizeWorkerError } from "./knowledge/workerError";
 
 if (!ENV.databaseUrl)
   throw new Error("DATABASE_URL is required for Knowledge worker");
@@ -55,11 +56,13 @@ for (const worker of [parseWorker, embedWorker]) {
     console.error(`[Knowledge Worker] Failed ${worker.name} job`, {
       jobId: job?.id,
       attemptsMade: job?.attemptsMade,
-      error,
+      error: summarizeWorkerError(error),
     });
   });
   worker.on("error", error => {
-    console.error(`[Knowledge Worker] ${worker.name} connection error`, error);
+    console.error(`[Knowledge Worker] ${worker.name} connection error`, {
+      error: summarizeWorkerError(error),
+    });
   });
 }
 
@@ -96,7 +99,7 @@ async function cleanupExpiredUploads() {
     } catch (error) {
       console.error("[Knowledge Worker] Failed to clean expired upload", {
         documentId: session.id,
-        error,
+        error: summarizeWorkerError(error),
       });
     }
   }
@@ -129,7 +132,9 @@ async function shutdown(signal: string) {
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     void shutdown(signal).catch(error => {
-      console.error("[Knowledge Worker] Shutdown failed", error);
+      console.error("[Knowledge Worker] Shutdown failed", {
+        error: summarizeWorkerError(error),
+      });
       process.exitCode = 1;
     });
   });
