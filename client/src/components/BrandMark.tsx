@@ -1,24 +1,38 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Linply's mark: a source dot with signal arcs radiating from it — the same
- * motif as the sign-in backdrop, meaning one knowledge base reaching many
- * channels. Drawn on a 24px grid with 2px strokes so it stays legible at 16px.
+ * The Linply logo, drawn to match `public/favicon.svg` exactly — same 32px
+ * grid, same stroke weight, same accent square. The in-app mark and the browser
+ * tab icon are the same drawing, so they cannot drift apart.
+ *
+ * The stroke follows `currentColor` (near-black on light, white on dark, which
+ * is what the favicon's own media query does) and the accent comes from the
+ * `--brand-accent` token.
  */
 export function BrandGlyph({ className }: { className?: string }) {
   return (
     <svg
-      viewBox="0 0 24 24"
+      viewBox="0 0 32 32"
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
       className={className}
-      aria-hidden="true"
+      role="img"
+      aria-label="Linply"
     >
-      <circle cx="7" cy="12" r="2.4" fill="currentColor" stroke="none" />
-      <path d="M12.5 8.2a5.6 5.6 0 0 1 0 7.6" />
-      <path d="M16.6 5.2a10 10 0 0 1 0 13.6" opacity="0.55" />
+      <path
+        d="M7.125 7.125V24.875H24.875"
+        stroke="currentColor"
+        strokeWidth="5.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect
+        x="12.4"
+        y="12"
+        width="8.5"
+        height="8.5"
+        rx="2.6"
+        fill="var(--brand-accent)"
+      />
     </svg>
   );
 }
@@ -33,11 +47,11 @@ export default function BrandMark({
   return (
     <span
       className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground",
+        "flex size-8 shrink-0 items-center justify-center text-foreground",
         className
       )}
     >
-      <BrandGlyph className={cn("size-4", glyphClassName)} />
+      <BrandGlyph className={cn("size-full", glyphClassName)} />
     </span>
   );
 }
