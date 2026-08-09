@@ -107,8 +107,6 @@ Key settings:
   the plan alone decides.
 - `EMBEDDING_PROVIDER=local|openai|voyage`, `RAG_EMBEDDINGS_ENABLED` — retrieval config;
   disabling embeddings falls back to keyword search.
-- `DEMO_ACCOUNT_EMAIL` / `DEMO_ACCOUNT_PASSWORD` — optional one-click demo entry on the
-  sign-in page. An ordinary account with no special rights; it must already exist.
 - `REDIS_URL`, `QUEUE_REDIS_URL`, `AWS_*` — session cache, BullMQ, knowledge file storage.
 
 See `.env.example` for the full list.
@@ -160,12 +158,11 @@ database sessions, knowledge parsing, ticket smoke flow.
 1. Set production environment variables — `DATABASE_URL`, `APP_BASE_URL`, model and
    embedding config.
 2. Run `pnpm db:migrate`.
-3. Optionally run `pnpm auth:create-user` and set `DEMO_ACCOUNT_*` for the demo entry.
-4. Run `pnpm kb:embed` to backfill vectors; switching embedding models resets old vectors.
-5. Point the Google OAuth callback at `${APP_BASE_URL}/api/auth/oauth/google/callback`.
-6. Create an `agent-worker` service and set `AGENT_EXECUTION_MODE=worker` on the web service.
-7. Create object storage and a `knowledge-worker` service, then run `pnpm kb:storage:cors` once.
-8. Start with `NODE_ENV=production pnpm start` and verify: email sign-in, Google sign-in,
+3. Run `pnpm kb:embed` to backfill vectors; switching embedding models resets old vectors.
+4. Point the Google OAuth callback at `${APP_BASE_URL}/api/auth/oauth/google/callback`.
+5. Create an `agent-worker` service and set `AGENT_EXECUTION_MODE=worker` on the web service.
+6. Create object storage and a `knowledge-worker` service, then run `pnpm kb:storage:cors` once.
+7. Start with `NODE_ENV=production pnpm start` and verify: email sign-in, Google sign-in,
    **cross-workspace isolation**, multipart upload, knowledge parsing, agent run lease
    recovery, and the Telegram webhook at `${APP_BASE_URL}/api/channels/telegram/:secret`.
 

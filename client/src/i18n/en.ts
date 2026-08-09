@@ -76,7 +76,6 @@ export const en = {
     haveAccount: "Already have an account?",
     noAccount: "No account yet?",
     orContinueWith: "or continue with",
-    demoAccount: "Demo account",
     passwordMismatch: "The two passwords do not match",
     oauthDenied: "Google sign-in was cancelled",
     oauthInvalidState: "This sign-in request expired, please try again",

@@ -69,7 +69,6 @@ export const zh: Dictionary = {
     haveAccount: "已有账号？",
     noAccount: "还没有账号？",
     orContinueWith: "或继续使用",
-    demoAccount: "体验账号",
     passwordMismatch: "两次输入的密码不一致",
     oauthDenied: "已取消 Google 登录",
     oauthInvalidState: "登录请求已失效，请重新尝试",

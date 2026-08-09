@@ -168,9 +168,6 @@ export default function AuthPage({ mode }: AuthPageProps) {
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: finishAuthentication,
   });
-  const demoLoginMutation = trpc.auth.demoLogin.useMutation({
-    onSuccess: finishAuthentication,
-  });
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: finishAuthentication,
   });
@@ -179,14 +176,9 @@ export default function AuthPage({ mode }: AuthPageProps) {
     if (!loading && user) setLocation(getReturnTo());
   }, [loading, setLocation, user]);
 
-  const pending =
-    loginMutation.isPending ||
-    demoLoginMutation.isPending ||
-    registerMutation.isPending;
+  const pending = loginMutation.isPending || registerMutation.isPending;
   const requestError =
-    loginMutation.error?.message ??
-    demoLoginMutation.error?.message ??
-    registerMutation.error?.message;
+    loginMutation.error?.message ?? registerMutation.error?.message;
   const oauthError = getOAuthError(t);
   const returnTo = getReturnTo();
   const googleOAuthUrl = `/api/auth/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`;
@@ -395,8 +387,7 @@ export default function AuthPage({ mode }: AuthPageProps) {
               </button>
             </p>
 
-            {providersQuery.data?.google ||
-            (!isRegister && providersQuery.data?.demoAccount) ? (
+            {providersQuery.data?.google ? (
               <>
                 <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
                   <span className="h-px flex-1 bg-border" />
@@ -405,53 +396,33 @@ export default function AuthPage({ mode }: AuthPageProps) {
                 </div>
 
                 <div className="space-y-2">
-                  {providersQuery.data?.google ? (
-                    <Button asChild variant="outline" className="w-full">
-                      <a href={googleOAuthUrl}>
-                        <svg
-                          className="size-4"
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                        >
-                          <path
-                            fill="#4285F4"
-                            d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z"
-                          />
-                          <path
-                            fill="#34A853"
-                            d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24Z"
-                          />
-                          <path
-                            fill="#FBBC05"
-                            d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7H1.4a12 12 0 0 0 0 10.8l4-3.1Z"
-                          />
-                          <path
-                            fill="#EA4335"
-                            d="M12 4.8c1.8 0 3.4.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8Z"
-                          />
-                        </svg>
-                        Google
-                      </a>
-                    </Button>
-                  ) : null}
-
-                  {!isRegister && providersQuery.data?.demoAccount ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => {
-                        setFormError(null);
-                        demoLoginMutation.mutate();
-                      }}
-                      disabled={pending}
-                    >
-                      {demoLoginMutation.isPending ? (
-                        <Loader2 className="animate-spin" />
-                      ) : null}
-                      {t.auth.demoAccount}
-                    </Button>
-                  ) : null}
+                  <Button asChild variant="outline" className="w-full">
+                    <a href={googleOAuthUrl}>
+                      <svg
+                        className="size-4"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="#4285F4"
+                          d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24Z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7H1.4a12 12 0 0 0 0 10.8l4-3.1Z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 4.8c1.8 0 3.4.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8Z"
+                        />
+                      </svg>
+                      Google
+                    </a>
+                  </Button>
                 </div>
               </>
             ) : null}
