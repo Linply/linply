@@ -62,7 +62,7 @@ import {
   createEmbedding,
   isEmbeddingEnabled,
 } from "./_core/embeddings";
-import { getChannelAdapter } from "./channels/inbound";
+import { getChannelAdapter } from "./channels/registry";
 import {
   buildTelegramWebhookUrl,
   isPublicWebhookUrl,
@@ -70,6 +70,7 @@ import {
   TelegramApiError,
 } from "./channels/telegram";
 import { CHANNEL_PROVIDERS, toChannelDto } from "./channels/types";
+import { notifyTicketResolved } from "./ticketNotifications";
 import {
   checkLimit,
   PLAN_ORDER,
@@ -97,6 +98,35 @@ const assertWithinPlan = async (
     });
   }
 };
+
+const TICKET_UPDATE_COPY = {
+  zh: {
+    statuses: {
+      pending: "待处理",
+      in_progress: "处理中",
+      resolved: "已解决",
+      closed: "已关闭",
+    },
+    statusChanged: (from: string, to: string) =>
+      `状态从「${from}」变更为「${to}」`,
+    notifiedWeb: "已通过分享链接会话通知外部用户",
+    notifiedTelegram: "已通过 Telegram 通知外部用户",
+    notificationFailed: "外部用户完成通知发送失败",
+  },
+  en: {
+    statuses: {
+      pending: "Pending",
+      in_progress: "In progress",
+      resolved: "Resolved",
+      closed: "Closed",
+    },
+    statusChanged: (from: string, to: string) =>
+      `Status changed from "${from}" to "${to}"`,
+    notifiedWeb: "Customer notified through the shared web conversation",
+    notifiedTelegram: "Customer notified through Telegram",
+    notificationFailed: "Customer resolution notification failed",
+  },
+} as const;
 
 const reindexKnowledgeEntry = async (id: number, workspaceId: number) => {
   const entry = await db.getKnowledgeEntryById(id, workspaceId);
@@ -627,6 +657,7 @@ export const appRouter = router({
             .optional(),
           priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
           assignedTo: z.number().optional(),
+          locale: z.enum(["en", "zh"]).optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -640,6 +671,11 @@ export const appRouter = router({
           updateData.status = input.status;
           if (input.status === "resolved") {
             updateData.resolvedAt = new Date();
+          } else if (
+            input.status === "pending" ||
+            input.status === "in_progress"
+          ) {
+            updateData.resolvedAt = null;
           }
         }
         if (input.priority !== undefined) updateData.priority = input.priority;
@@ -648,16 +684,49 @@ export const appRouter = router({
 
         await db.updateTicket(input.id, updateData);
 
-        if (input.status !== undefined && input.status !== ticket.status) {
+        const statusChanged =
+          input.status !== undefined && input.status !== ticket.status;
+        const copy = TICKET_UPDATE_COPY[input.locale ?? "zh"];
+        if (statusChanged) {
           await db.addTicketNote({
             ticketId: input.id,
             userId: ctx.user.id,
-            content: `Status changed from ${ticket.status} to ${input.status}`,
+            content: copy.statusChanged(
+              copy.statuses[ticket.status],
+              copy.statuses[input.status!]
+            ),
             noteType: "status_change",
           });
         }
 
-        return { success: true };
+        const notification =
+          statusChanged && input.status === "resolved"
+            ? await notifyTicketResolved(
+                {
+                  ...ticket,
+                  status: input.status,
+                  resolvedAt: updateData.resolvedAt ?? null,
+                },
+                ctx.user.id
+              )
+            : { status: "not_applicable" as const, provider: null };
+
+        if (notification.status !== "not_applicable") {
+          const content =
+            notification.status === "delivered"
+              ? notification.provider === "telegram"
+                ? copy.notifiedTelegram
+                : copy.notifiedWeb
+              : copy.notificationFailed;
+          await db.addTicketNote({
+            ticketId: input.id,
+            userId: ctx.user.id,
+            content,
+            noteType: "system",
+          });
+        }
+
+        return { success: true, notification };
       }),
 
     getNotes: workspaceProcedure

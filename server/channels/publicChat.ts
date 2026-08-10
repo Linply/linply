@@ -69,6 +69,10 @@ export function registerPublicChatRoutes(app: Express) {
         typeof req.body?.visitorId === "string" ? req.body.visitorId : "";
       const content =
         typeof req.body?.content === "string" ? req.body.content.trim() : "";
+      const locale =
+        req.body?.locale === "en" || req.body?.locale === "zh"
+          ? req.body.locale
+          : null;
 
       if (!VISITOR_ID_PATTERN.test(visitorId)) {
         res.status(400).json({ error: "访客标识无效" });
@@ -99,6 +103,7 @@ export function registerPublicChatRoutes(app: Express) {
           externalId: visitorId,
           externalChatId: visitorId,
           displayName: "网页访客",
+          locale,
         });
 
         const scope: ConversationScope = {

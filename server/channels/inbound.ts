@@ -4,15 +4,8 @@ import { createAgentChatResponse } from "../agentService";
 import * as db from "../db";
 import { TokenQuotaExceededError } from "../tokenQuota";
 import type { ConversationScope } from "../workspace";
-import { telegramAdapter } from "./telegram";
-import type { ChannelAdapter, InboundChannelMessage } from "./types";
-
-const ADAPTERS: Partial<Record<db.ChannelProvider, ChannelAdapter>> = {
-  telegram: telegramAdapter,
-};
-
-export const getChannelAdapter = (provider: db.ChannelProvider) =>
-  ADAPTERS[provider] ?? null;
+import { getChannelAdapter } from "./registry";
+import type { InboundChannelMessage } from "./types";
 
 export const DEFAULT_GREETING =
   "你好，我是这里的智能客服。直接把问题发给我就行，我会基于知识库回答；答不上来的会转给人工。";

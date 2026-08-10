@@ -24,10 +24,16 @@ vi.mock("./agentService", () => ({
   createAgentChatResponse: vi.fn(),
 }));
 
+vi.mock("./ticketNotifications", () => ({
+  notifyTicketResolved: vi.fn(),
+}));
+
 import * as db from "./db";
 import { appRouter } from "./routers";
+import { notifyTicketResolved } from "./ticketNotifications";
 
 const mockedDb = vi.mocked(db);
+const mockedNotifyTicketResolved = vi.mocked(notifyTicketResolved);
 
 const userA = {
   id: 101,
@@ -133,6 +139,10 @@ describe("workspace resource isolation", () => {
       enforced: false,
       adminExempt: false,
     });
+    mockedNotifyTicketResolved.mockResolvedValue({
+      status: "not_applicable",
+      provider: null,
+    });
   });
 
   it("rejects A from every ticket and chat history endpoint for B's ticket", async () => {
@@ -176,6 +186,53 @@ describe("workspace resource isolation", () => {
       offset: 0,
       workspaceId: WORKSPACE_A_ID,
     });
+  });
+
+  it("notifies an external contact when an owned ticket becomes resolved", async () => {
+    const ticketA = {
+      ...ticketB,
+      id: 42,
+      workspaceId: WORKSPACE_A_ID,
+      userId: userA.id,
+      contactId: 21,
+      channelId: 31,
+      title: "A 的外部工单",
+      status: "in_progress" as const,
+    };
+    mockedDb.getTicketById.mockResolvedValue(ticketA as never);
+    mockedNotifyTicketResolved.mockResolvedValue({
+      status: "delivered",
+      provider: "telegram",
+    });
+
+    const caller = appRouter.createCaller(createContext());
+    const result = await caller.tickets.update({
+      id: ticketA.id,
+      status: "resolved",
+      locale: "en",
+    });
+
+    expect(mockedDb.updateTicket).toHaveBeenCalledWith(
+      ticketA.id,
+      expect.objectContaining({
+        status: "resolved",
+        resolvedAt: expect.any(Date),
+      })
+    );
+    expect(mockedNotifyTicketResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ticketA.id, status: "resolved" }),
+      userA.id
+    );
+    expect(result.notification).toEqual({
+      status: "delivered",
+      provider: "telegram",
+    });
+    expect(mockedDb.addTicketNote).toHaveBeenCalledTimes(2);
+    expect(mockedDb.addTicketNote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Status changed from "In progress" to "Resolved"',
+      })
+    );
   });
 
   it("scopes unscoped chat history to A's own console thread", async () => {

@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import BrandMark from "@/components/BrandMark";
 import LanguageToggle from "@/components/LanguageToggle";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Bot, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +25,7 @@ const getVisitorId = (publicKey: string) => {
 
 export default function PublicChat() {
   const t = useT();
+  const { locale } = useLocale();
   const [, params] = useRoute("/a/:publicKey");
   const publicKey = params?.publicKey ?? "";
 
@@ -90,6 +91,41 @@ export default function PublicChat() {
   }, [publicKey]);
 
   useEffect(() => {
+    if (!publicKey || !agent || sending) return;
+    let cancelled = false;
+
+    const refreshHistory = async () => {
+      try {
+        const response = await fetch(
+          `/api/public/agent/${publicKey}/history?visitorId=${encodeURIComponent(getVisitorId(publicKey))}`
+        );
+        if (!response.ok) return;
+        const history = await response.json();
+        if (cancelled) return;
+        setMessages(
+          (history.messages ?? []).map(
+            (message: { id: number; role: string; content: string }) => ({
+              id: String(message.id),
+              role: message.role === "user" ? "user" : "assistant",
+              content: message.content,
+            })
+          )
+        );
+      } catch {
+        // The next interval retries; transient refresh failures should not
+        // replace a usable conversation with an error state.
+      }
+    };
+
+    void refreshHistory();
+    const intervalId = window.setInterval(() => void refreshHistory(), 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [agent, publicKey, sending]);
+
+  useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
@@ -114,6 +150,7 @@ export default function PublicChat() {
         body: JSON.stringify({
           visitorId: getVisitorId(publicKey),
           content,
+          locale,
         }),
       });
       const payload = await response.json().catch(() => null);
