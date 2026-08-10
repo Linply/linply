@@ -689,6 +689,22 @@ export async function getWorkspaceChannel(
   return channel ?? null;
 }
 
+export async function getWorkspaceChannelById(id: number, workspaceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [channel] = await db
+    .select()
+    .from(workspaceChannels)
+    .where(
+      and(
+        eq(workspaceChannels.id, id),
+        eq(workspaceChannels.workspaceId, workspaceId)
+      )
+    )
+    .limit(1);
+  return channel ?? null;
+}
+
 export async function getChannelByWebhookSecret(secret: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
