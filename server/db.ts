@@ -39,6 +39,7 @@ import {
   agentToolInvocations,
   agentToolEffects,
 } from "../drizzle/schema";
+import type { MessageAttachment } from "../shared/attachments";
 import type {
   KnowledgeDocumentStatus,
   KnowledgeSecurityStatus,
@@ -2135,6 +2136,8 @@ export async function saveChatMessage(data: {
   channelId?: number | null;
   role: "user" | "assistant";
   content: string;
+  /** 图片/文件附件；只存对象存储 key 与元信息。 */
+  attachments?: MessageAttachment[];
   relatedKnowledgeIds?: number[];
   relatedKnowledgeSnapshot?: Array<{
     id: number;
@@ -2156,6 +2159,7 @@ export async function saveChatMessage(data: {
     channelId: data.channelId ?? null,
     role: data.role,
     content: data.content,
+    attachments: data.attachments?.length ? data.attachments : null,
     relatedKnowledgeIds: data.relatedKnowledgeIds ?? null,
     relatedKnowledgeSnapshot: data.relatedKnowledgeSnapshot ?? null,
     agentRunId: data.agentRunId,
@@ -2390,6 +2394,8 @@ export async function createAgentRun(data: {
   channelId?: number | null;
   ticketId?: number;
   input: string;
+  /** 触发本次运行的附件，重试时据此重建多模态输入。 */
+  attachments?: MessageAttachment[];
   status?: AgentRunStatus;
   llmProvider?: string;
   llmModel?: string;
@@ -2417,6 +2423,7 @@ export async function createAgentRun(data: {
         channelId: data.channelId ?? null,
         ticketId: data.ticketId,
         input: data.input,
+        attachments: data.attachments?.length ? data.attachments : null,
         status: data.status ?? "queued",
         llmProvider: data.llmProvider,
         llmModel: data.llmModel,

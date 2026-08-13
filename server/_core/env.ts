@@ -117,6 +117,12 @@ export const ENV = {
     50,
     5_000
   ),
+  /**
+   * Deployment-level AI settings, as one JSON document in the shape of
+   * `shared/aiSettings.ts` — the same format a workspace override uses. Covers
+   * everything the discrete variables below do not.
+   */
+  agentSettings: process.env.AGENT_SETTINGS ?? "",
   agentTracingEnabled: process.env.AGENT_TRACING_ENABLED === "true",
   agentHandoffsEnabled: process.env.AGENT_HANDOFFS_ENABLED === "true",
   agentExecutionMode:

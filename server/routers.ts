@@ -11,6 +11,16 @@ import { parseJsonValue } from "./agentUtils";
 import { createAgentChatResponse } from "./agentService";
 import { enqueueAgentRun } from "./agentRunExecution";
 import {
+  MessageAttachmentsSchema,
+  parseMessageAttachments,
+} from "../shared/attachments";
+import {
+  createAttachmentDownloadUrl,
+  createAttachmentUploadUrl,
+  isAttachmentStorageConfigured,
+} from "./ai/attachments";
+import { resolveWorkspaceAiSettings } from "./ai/settings";
+import {
   TOKEN_QUOTA_EXCEEDED_CODE,
   TokenQuotaExceededError,
 } from "./tokenQuota";
@@ -1378,12 +1388,18 @@ export const appRouter = router({
      * stream keeps that step to a few lines of state.
      */
     ask: workspaceProcedure
-      .input(z.object({ content: z.string().trim().min(1).max(2_000) }))
+      .input(
+        z.object({
+          content: z.string().trim().min(1).max(2_000),
+          attachments: MessageAttachmentsSchema.optional(),
+        })
+      )
       .mutation(async ({ input, ctx }) => {
         try {
           const response = await createAgentChatResponse({
             scope: ctx.scope,
             content: input.content,
+            attachments: input.attachments,
           });
           return {
             runId: response.runId,
@@ -1474,6 +1490,74 @@ export const appRouter = router({
           };
         });
       }),
+    /**
+     * What the composer is allowed to offer. The client reads its limits from
+     * the same settings document the run enforces, so the two cannot drift.
+     */
+    attachmentSettings: workspaceProcedure.query(async ({ ctx }) => {
+      const settings = await resolveWorkspaceAiSettings(ctx.workspace.id);
+      return {
+        enabled: isAttachmentStorageConfigured(),
+        images: settings.images,
+        files: settings.files,
+      };
+    }),
+
+    /**
+     * The browser uploads straight to object storage; the server only signs the
+     * request, and only after the settings have accepted the file.
+     */
+    createAttachmentUpload: workspaceProcedure
+      .input(
+        z.object({
+          fileName: z.string().trim().min(1).max(255),
+          mimeType: z.string().trim().min(1).max(128),
+          bytes: z.number().int().positive(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        if (!isAttachmentStorageConfigured()) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "附件存储尚未配置，无法上传图片或文件。",
+          });
+        }
+        const settings = await resolveWorkspaceAiSettings(ctx.workspace.id);
+        try {
+          return await createAttachmentUploadUrl({
+            workspaceId: ctx.workspace.id,
+            fileName: input.fileName,
+            mimeType: input.mimeType,
+            bytes: input.bytes,
+            settings,
+          });
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              error instanceof Error
+                ? error.message
+                : "附件校验失败，请换一个文件。",
+          });
+        }
+      }),
+
+    /** A short-lived URL so the customer can see what they just sent. */
+    attachmentPreviewUrl: workspaceProcedure
+      .input(z.object({ storageKey: z.string().min(1).max(512) }))
+      .query(async ({ input, ctx }) => {
+        try {
+          return {
+            url: await createAttachmentDownloadUrl({
+              workspaceId: ctx.workspace.id,
+              storageKey: input.storageKey,
+            }),
+          };
+        } catch {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权访问该附件" });
+        }
+      }),
+
   }),
 
   // ============ Agent Runs Router ============
@@ -1539,6 +1623,8 @@ export const appRouter = router({
             },
             ticketId: existingRun.ticketId ?? undefined,
             content: input.content ?? existingRun.input,
+            // A retry answers the same message, attachments included.
+            attachments: parseMessageAttachments(existingRun.attachments),
             retryOfRunId: existingRun.id,
           });
           return { runId: run.id, quota: run.quota };

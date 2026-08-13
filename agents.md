@@ -28,7 +28,7 @@
   │  入站管线：识别 contact          │  tRPC + SSE 流式聊天
   └──────────────┬──────────────────┘
                  ▼
-      后端 (Express + tRPC + OpenAI Agents SDK)
+      后端 (Express + tRPC + pi Agent SDK)
       每个请求携带 ConversationScope
                  │
    ├── PostgreSQL + pgvector   数据 & 向量存储（全部按 workspaceId 过滤）
@@ -106,7 +106,11 @@
 
 ## 智能客服 Agent
 
-聊天固定使用服务端 OpenAI Agents SDK：用户提问 → 创建 Agent Run → Agent 调用工具 → SSE 推送执行事件和文本增量 → 保存最终回答、结构化结果和步骤。
+聊天固定使用服务端 pi Agent SDK（`server/ai/`）：用户提问 → 创建 Agent Run → Agent 调用工具 → SSE 推送执行事件和文本增量 → 保存最终回答、结构化结果和步骤。
+
+`server/ai/` 的分工：`settings.ts` 按「内置默认 ← 部署 env ← 工作区」三层深合并出一份设置文档；`provider.ts` 只向 pi 注册部署自己的 OpenAI 兼容网关；`resourceLoader.ts` 关掉 pi 的全部本地发现（扩展、skills、AGENTS.md），避免仓库或运维机器上的指令混进客服回复；`session.ts` 每条消息起一个 in-memory 会话并以 `noTools: "all"` 关掉 read/bash/edit/write；`tools.ts` 只暴露 5 个业务工具，执行仍走 `toolRuntime.ts` 的幂等与重放记账。
+
+多模态：图片随 `prompt(text, { images })` 直接进模型；PDF/文本按 pi 协议无法作为字节传入，改为服务端抽取文字后放进 untrusted 分区。附件本身只存对象存储 key，浏览器用预签名 URL 直传。
 
 Agent 聊天先调用 `POST /api/chat/start` 创建 Run，再通过 `GET /api/chat/stream/:runId` 订阅事件。SSE 以 JSON `type` 区分 `agent_event`、`delta`、`meta`、`done`、`error` 和重试时的 `reset`，Agent 事件同时带有 SSE `id`，客户端通过 `afterSeq` 续接。
 
@@ -172,7 +176,7 @@ Agent 的人设写在 `server/agentPersona.ts`，目标是一个真人客服而�
 - Agent Step 类型：`thinking` / `tool_call` / `tool_result` / `final` / `error`。
 - `/runs/:runId` 为 Agent Run 详情页，可从聊天回复底部复制 Run UUID 或直接跳转。
 - 详情页展示完整状态、步骤、最终回答、失败原因和重试入口；只能查看本工作区的 Run。
-- `AGENT_TRACING_ENABLED=true` 时启用 OpenAI Agents tracing；trace 不包含敏感原始数据。
+- `AGENT_TRACING_ENABLED=true` 时在 Run 元数据里记录 tracing 开关；实际链路追踪由 OTEL 导出，不包含敏感原始数据。
 
 **断线恢复与重试**
 
@@ -454,8 +458,8 @@ Agent 模式的 Railway 部署需要单独创建 `agent-worker` Service。Web Se
 | 后端 | Express 4、tRPC 11 |
 | 数据库 | PostgreSQL 16 + pgvector、Drizzle ORM |
 | 向量 | BAAI/bge-small-zh-v1.5（本地，512 维）/ OpenAI / Voyage |
-| LLM | OpenAI Agents SDK |
-| Agent | OpenAI Agents SDK |
+| LLM | pi Agent SDK（OpenAI 兼容网关） |
+| Agent | pi Agent SDK（`@earendil-works/pi-coding-agent`） |
 | 认证 | 邮箱密码 + Google OAuth + PostgreSQL Session |
 | 渠道 | Telegram Bot API（webhook / getUpdates 轮询） |
 

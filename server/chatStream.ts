@@ -3,8 +3,10 @@ import { authenticateRequest } from "./_core/auth";
 import * as db from "./db";
 import type { KnowledgeRetrieval } from "./db";
 import { getTicketForScope } from "./accessControl";
+import { parseMessageAttachments } from "../shared/attachments";
 import { consoleScope, requireWorkspaceForUser } from "./workspace";
 import {
+  AGENT_LLM_PROVIDER,
   type AgentEvent,
   type AgentRunStats,
   type StructuredAgentOutput,
@@ -122,7 +124,7 @@ const streamAgentRunEvents = async (
     if (currentRun?.status === "completed" && events.length === 0) {
       writeSse(res, {
         type: "done",
-        llmProvider: currentRun.llmProvider ?? "openai-agents",
+        llmProvider: currentRun.llmProvider ?? AGENT_LLM_PROVIDER,
         llmModel: currentRun.llmModel ?? undefined,
         stats: {
           durationMs: currentRun.durationMs ?? 0,
@@ -165,8 +167,12 @@ export function registerChatStreamRoutes(app: Express) {
         typeof req.body?.content === "string" ? req.body.content.trim() : "";
       const ticketId =
         typeof req.body?.ticketId === "number" ? req.body.ticketId : undefined;
+      // Anything that does not survive the schema is dropped rather than
+      // rejected: a malformed attachment must not cost the customer the message
+      // they typed alongside it.
+      const attachments = parseMessageAttachments(req.body?.attachments);
 
-      if (!content) {
+      if (!content && attachments.length === 0) {
         res.status(400).json({ error: "消息内容不能为空" });
         return;
       }
@@ -183,6 +189,7 @@ export function registerChatStreamRoutes(app: Express) {
         scope,
         ticketId,
         content,
+        attachments,
       });
       res.status(202).json({
         mode: "agent",

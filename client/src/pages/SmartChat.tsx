@@ -30,6 +30,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { mergeChatHistory } from "@/lib/chatMessageMerge";
 import { trpc } from "@/lib/trpc";
+import {
+  AttachmentButton,
+  AttachmentTray,
+  MessageAttachments,
+  type PendingAttachment,
+  useChatAttachments,
+} from "@/components/ChatAttachments";
+import type { MessageAttachment } from "@shared/attachments";
 import type { TokenQuotaSnapshot, TokenUsageState } from "@shared/types";
 import {
   AlertCircle,
@@ -112,6 +120,7 @@ type ChatMessage = {
   quotaExceeded?: boolean;
   sourcePrompt?: string;
   runStats?: MessageRunStats | null;
+  attachments?: MessageAttachment[];
 };
 
 type ChatStreamItem =
@@ -837,9 +846,22 @@ export default function SmartChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const sendMessage = async (content: string) => {
+  const composerAttachments = useChatAttachments();
+
+  const sendMessage = async (
+    content: string,
+    attachments: PendingAttachment[] = []
+  ) => {
     const userMessage = content.trim();
-    if (!userMessage || isLoading || quotaBlocksSending) return;
+    // A message may be nothing but a screenshot, so an empty body is only
+    // empty when nothing came with it.
+    if (
+      (!userMessage && attachments.length === 0) ||
+      isLoading ||
+      quotaBlocksSending
+    ) {
+      return;
+    }
 
     const now = Date.now();
     const assistantId = `${now + 1}`;
@@ -852,6 +874,7 @@ export default function SmartChat() {
         id: `${now}`,
         role: "user",
         content: userMessage,
+        attachments,
       },
       {
         id: assistantId,
@@ -869,7 +892,12 @@ export default function SmartChat() {
       const startResponse = await fetch("/api/chat/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: userMessage }),
+        body: JSON.stringify({
+          content: userMessage,
+          attachments: attachments.map(
+            ({ previewUrl: _preview, ...rest }) => rest
+          ),
+        }),
       });
       const startPayload = (await startResponse
         .json()
@@ -955,7 +983,9 @@ export default function SmartChat() {
 
   const handleSendMessage = (event: React.FormEvent) => {
     event.preventDefault();
-    void sendMessage(inputValue);
+    const attachments = composerAttachments.attachments;
+    composerAttachments.clear();
+    void sendMessage(inputValue, attachments);
   };
 
   const handleRetry = (message: ChatMessage) => {
@@ -1080,7 +1110,9 @@ export default function SmartChat() {
                       <p className="mb-1 text-xs font-medium text-muted-foreground">
                         {agentName}
                       </p>
-                    ) : null}
+                    ) : (
+                      <MessageAttachments attachments={message.attachments} />
+                    )}
                     {message.role === "assistant" && hasStreamItems ? (
                       <div>
                         {streamGroups.map(group =>
@@ -1344,6 +1376,10 @@ export default function SmartChat() {
             onSubmit={handleSendMessage}
             className="relative flex min-h-[4.75rem] shrink-0 flex-col rounded-2xl border border-input bg-card p-3 pb-11 shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md"
           >
+          <AttachmentTray
+            attachments={composerAttachments.attachments}
+            onRemove={composerAttachments.remove}
+          />
           <Textarea
             rows={1}
             disabled={isLoading || quotaBlocksSending}
@@ -1362,15 +1398,33 @@ export default function SmartChat() {
               }
             }}
           />
-          {quotaWarning ? (
+          {composerAttachments.error ? (
+            <p className="absolute bottom-3.5 left-4 text-xs text-destructive">
+              {composerAttachments.error}
+            </p>
+          ) : quotaWarning ? (
             <p className="absolute bottom-3.5 left-4 text-xs text-warning">
               {quotaWarning}
             </p>
           ) : null}
+          {composerAttachments.enabled ? (
+            <AttachmentButton
+              accept={composerAttachments.accept}
+              disabled={isLoading || quotaBlocksSending}
+              isUploading={composerAttachments.isUploading}
+              onSelect={files => void composerAttachments.addFiles(files)}
+            />
+          ) : null}
           <Button
             type="submit"
             size="icon"
-            disabled={isLoading || quotaBlocksSending || !inputValue.trim()}
+            disabled={
+              isLoading ||
+              quotaBlocksSending ||
+              composerAttachments.isUploading ||
+              (!inputValue.trim() &&
+                composerAttachments.attachments.length === 0)
+            }
             className="absolute bottom-2.5 right-3 rounded-full"
             aria-label={t.chat.send}
             title={t.chat.send}

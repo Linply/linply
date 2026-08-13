@@ -2,16 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunStatus, AgentRunStepType } from "./db";
 import * as db from "./db";
 import { deriveAgentWriteAuthorization } from "./agentPolicy";
+import { createAgentTools } from "./ai/tools";
+import type { AgentContext } from "./ai/types";
 import {
   AgentHandoffEvaluationSchema,
   AgentToolInputSchemas,
-  agentTools,
   StructuredAgentOutputSchema,
   buildAgentReplayContext,
   buildStructuredAgentOutput,
   buildToolEffectIdentity,
   classifyAgentToolError,
-  consumeConfirmedAgentStream,
   evaluateInputGuardrails,
   evaluateAgentHandoff,
   getAgentTraceId,
@@ -22,6 +22,46 @@ import {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/**
+ * pi tools close over their run instead of receiving it per call, so a test
+ * builds the tool set for the context it wants to exercise. The result comes
+ * back as model-facing content: JSON for a success, recovery copy for a
+ * failure.
+ */
+const runTool = async (
+  toolName: string,
+  context: Partial<AgentContext>,
+  params: Record<string, unknown>
+) => {
+  const tools = createAgentTools({
+    scope: {
+      workspaceId: 3,
+      ownerUserId: 42,
+      contactId: null,
+      channelId: null,
+    },
+    ...context,
+  } as AgentContext);
+  const tool = tools.find(candidate => candidate.name === toolName);
+  expect(tool).toBeDefined();
+
+  const outcome = await tool!.execute(
+    "call-1",
+    params as never,
+    undefined,
+    undefined,
+    {} as never
+  );
+  const text = outcome.content
+    .map(part => ("text" in part ? part.text : ""))
+    .join("");
+  return {
+    text,
+    isError: Boolean((outcome.details as { isError?: boolean })?.isError),
+    json: () => JSON.parse(text) as unknown,
+  };
+};
 
 const runStatuses: AgentRunStatus[] = [
   "queued",
@@ -102,7 +142,8 @@ describe("agent guardrails and structured output", () => {
   it("offers a ticket when knowledge search has no matching entries", () => {
     const structured = buildStructuredAgentOutput({
       userContent: "我想了解未收录的服务规则",
-      assistantContent: "知识库中暂时没有相关信息，建议创建工单由人工客服确认。",
+      assistantContent:
+        "知识库中暂时没有相关信息，建议创建工单由人工客服确认。",
       events: [
         {
           type: "tool_result",
@@ -174,11 +215,6 @@ describe("agent guardrails and structured output", () => {
 
 describe("agent tool validation and summaries", () => {
   it("continues with a later tool after an earlier tool returns an error result", async () => {
-    const searchTool = agentTools.find(tool => tool.name === "searchKnowledge");
-    const listTool = agentTools.find(tool => tool.name === "listTickets");
-    expect(searchTool).toBeDefined();
-    expect(listTool).toBeDefined();
-
     const now = new Date();
     vi.spyOn(db, "searchKnowledgeWithMeta").mockRejectedValue(
       new Error("embedding service unavailable")
@@ -201,37 +237,31 @@ describe("agent tool validation and summaries", () => {
       },
     ]);
 
-    const runContext = {
-      context: {
-        scope: {
-          workspaceId: 3,
-          ownerUserId: 42,
-          contactId: null,
-          channelId: null,
-        },
-      },
-    } as Parameters<NonNullable<typeof searchTool>["invoke"]>[0];
-
-    const failedToolResult = await searchTool!.invoke(
-      runContext,
-      JSON.stringify({ query: "退货政策", limit: 3 })
+    const failedToolResult = await runTool(
+      "searchKnowledge",
+      {},
+      { query: "退货政策", limit: 3 }
     );
-    expect(failedToolResult).toBe(
+    expect(failedToolResult.isError).toBe(true);
+    expect(failedToolResult.text).toBe(
       "知识库检索失败：embedding service unavailable。请说明无法确认，并建议创建工单。"
     );
 
-    const laterToolResult = await listTool!.invoke(
-      runContext,
-      JSON.stringify({ limit: 5, offset: 0 })
+    const laterToolResult = await runTool(
+      "listTickets",
+      {},
+      { limit: 5, offset: 0 }
     );
-    expect(laterToolResult).toEqual([
+    // The model reads a tool result as text, so timestamps arrive as ISO
+    // strings rather than as Date objects.
+    expect(laterToolResult.json()).toEqual([
       {
         id: 7,
         title: "物流异常",
         status: "pending",
         priority: "medium",
-        createdAt: now,
-        updatedAt: now,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
       },
     ]);
     expect(db.listTickets).toHaveBeenCalledWith({
@@ -243,9 +273,6 @@ describe("agent tool validation and summaries", () => {
 
   it("records target mismatch as a non-retry policy denial without side effects", async () => {
     const runId = "22222222-2222-4222-8222-222222222222";
-    const noteTool = agentTools.find(tool => tool.name === "addTicketNote");
-    expect(noteTool).toBeDefined();
-
     vi.spyOn(db, "addAgentRunStep").mockResolvedValue({ id: 1 });
     vi.spyOn(db, "findReusableAgentToolInvocation").mockResolvedValue(null);
     vi.spyOn(db, "getAgentToolInvocationRetryCount").mockResolvedValue(0);
@@ -260,25 +287,18 @@ describe("agent tool validation and summaries", () => {
       .mockRejectedValue(new Error("side effect must not execute"));
     const currentUserMessage = "请给工单 #42 添加备注：已经联系客户。";
 
-    const result = await noteTool!.invoke(
+    const result = await runTool(
+      "addTicketNote",
       {
-        context: {
-          runId,
-          rootRunId: runId,
-scope: {
-            workspaceId: 3,
-            ownerUserId: 42,
-            contactId: null,
-            channelId: null,
-          },
-          currentUserMessage,
-          authorization: deriveAgentWriteAuthorization(currentUserMessage),
-        },
-      } as Parameters<NonNullable<typeof noteTool>["invoke"]>[0],
-      JSON.stringify({ ticketId: 43, content: "已经联系客户。" })
+        runId,
+        rootRunId: runId,
+        currentUserMessage,
+        authorization: deriveAgentWriteAuthorization(currentUserMessage),
+      },
+      { ticketId: 43, content: "已经联系客户。" }
     );
 
-    expect(result).toContain("POLICY_DENIED");
+    expect(result.text).toContain("POLICY_DENIED");
     expect(addNote).not.toHaveBeenCalled();
     expect(failInvocation).toHaveBeenCalledWith({
       id: 21,
@@ -291,8 +311,6 @@ scope: {
   it("preserves authorized side-effect idempotency replay on retry", async () => {
     const rootRunId = "11111111-1111-4111-8111-111111111111";
     const retryRunId = "22222222-2222-4222-8222-222222222222";
-    const createTool = agentTools.find(tool => tool.name === "createTicket");
-    expect(createTool).toBeDefined();
     const currentUserMessage = "请创建一个支持工单。";
     const historicalResult = {
       success: true,
@@ -319,29 +337,22 @@ scope: {
       .spyOn(db, "createTicketIdempotent")
       .mockRejectedValue(new Error("side effect must not execute"));
 
-    const result = await createTool!.invoke(
+    const result = await runTool(
+      "createTicket",
       {
-        context: {
-          runId: retryRunId,
-          rootRunId,
-scope: {
-            workspaceId: 3,
-            ownerUserId: 42,
-            contactId: null,
-            channelId: null,
-          },
-          currentUserMessage,
-          authorization: deriveAgentWriteAuthorization(currentUserMessage),
-        },
-      } as Parameters<NonNullable<typeof createTool>["invoke"]>[0],
-      JSON.stringify({
+        runId: retryRunId,
+        rootRunId,
+        currentUserMessage,
+        authorization: deriveAgentWriteAuthorization(currentUserMessage),
+      },
+      {
         title: "物流异常",
         description: "订单状态未更新",
         priority: "medium",
-      })
+      }
     );
 
-    expect(result).toEqual(historicalResult);
+    expect(result.json()).toEqual(historicalResult);
     expect(createTicket).not.toHaveBeenCalled();
     expect(completeInvocation).toHaveBeenCalledWith({
       id: 31,
@@ -355,8 +366,6 @@ scope: {
     const rootRunId = "11111111-1111-4111-8111-111111111111";
     const retryRunId = "22222222-2222-4222-8222-222222222222";
     const originalRunId = "33333333-3333-4333-8333-333333333333";
-    const listTool = agentTools.find(tool => tool.name === "listTickets");
-    expect(listTool).toBeDefined();
 
     const historicalResult = [
       {
@@ -386,23 +395,13 @@ scope: {
       .spyOn(db, "listTickets")
       .mockRejectedValue(new Error("listTickets should not execute"));
 
-    const result = await listTool!.invoke(
-      {
-        context: {
-          runId: retryRunId,
-          rootRunId,
-scope: {
-            workspaceId: 3,
-            ownerUserId: 42,
-            contactId: null,
-            channelId: null,
-          },
-        },
-      } as Parameters<NonNullable<typeof listTool>["invoke"]>[0],
-      JSON.stringify({ limit: 5, offset: 0 })
+    const result = await runTool(
+      "listTickets",
+      { runId: retryRunId, rootRunId },
+      { limit: 5, offset: 0 }
     );
 
-    expect(result).toEqual(historicalResult);
+    expect(result.json()).toEqual(historicalResult);
     expect(listTickets).not.toHaveBeenCalled();
     expect(completeInvocation).toHaveBeenCalledWith({
       id: 11,
@@ -415,8 +414,6 @@ scope: {
   it("persists a transient tool failure for targeted retry", async () => {
     const rootRunId = "11111111-1111-4111-8111-111111111111";
     const runId = "22222222-2222-4222-8222-222222222222";
-    const searchTool = agentTools.find(tool => tool.name === "searchKnowledge");
-    expect(searchTool).toBeDefined();
 
     vi.spyOn(db, "addAgentRunStep").mockResolvedValue({ id: 1 });
     vi.spyOn(db, "findReusableAgentToolInvocation").mockResolvedValue(null);
@@ -433,23 +430,13 @@ scope: {
       new Error("embedding request timed out")
     );
 
-    const result = await searchTool!.invoke(
-      {
-        context: {
-          runId,
-          rootRunId,
-scope: {
-            workspaceId: 3,
-            ownerUserId: 42,
-            contactId: null,
-            channelId: null,
-          },
-        },
-      } as Parameters<NonNullable<typeof searchTool>["invoke"]>[0],
-      JSON.stringify({ query: "退款政策", limit: 3 })
+    const result = await runTool(
+      "searchKnowledge",
+      { runId, rootRunId },
+      { query: "退款政策", limit: 3 }
     );
 
-    expect(result).toContain("知识库检索失败");
+    expect(result.text).toContain("知识库检索失败");
     expect(startInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
         rootRunId,
@@ -599,7 +586,12 @@ describe("agent SDK usage normalization", () => {
         outputTokens: 30,
         totalTokens: 150,
       })
-    ).toEqual({ requests: 1, inputTokens: 120, outputTokens: 30, totalTokens: 150 });
+    ).toEqual({
+      requests: 1,
+      inputTokens: 120,
+      outputTokens: 30,
+      totalTokens: 150,
+    });
   });
 
   it("falls back to non-zero request entries when aggregate fields are zero", () => {
@@ -614,7 +606,12 @@ describe("agent SDK usage normalization", () => {
           { inputTokens: 40, outputTokens: 10, totalTokens: 50 },
         ],
       })
-    ).toEqual({ requests: 2, inputTokens: 120, outputTokens: 30, totalTokens: 150 });
+    ).toEqual({
+      requests: 2,
+      inputTokens: 120,
+      outputTokens: 30,
+      totalTokens: 150,
+    });
   });
 
   it("rejects unconfirmed zero usage", () => {
@@ -626,45 +623,6 @@ describe("agent SDK usage normalization", () => {
         totalTokens: 0,
       })
     ).toBeUndefined();
-  });
-  it("rejects a stream error even after partial text was emitted", async () => {
-    async function* partialStream() {
-      yield "partial";
-      throw new Error("stream interrupted");
-    }
-    await expect(
-      consumeConfirmedAgentStream({
-        textStream: partialStream(),
-        completed: Promise.resolve(),
-        usage: { requests: 1, inputTokens: 10, outputTokens: 2, totalTokens: 12 },
-      })
-    ).rejects.toThrow("stream interrupted");
-  });
-
-  it("rejects completion failure after a complete text stream", async () => {
-    async function* textStream() {
-      yield "partial";
-    }
-    await expect(
-      consumeConfirmedAgentStream({
-        textStream: textStream(),
-        completed: Promise.reject(new Error("completion interrupted")),
-        usage: { requests: 1, inputTokens: 10, outputTokens: 2, totalTokens: 12 },
-      })
-    ).rejects.toThrow("completion interrupted");
-  });
-
-  it("rejects completed streams without confirmed usage", async () => {
-    async function* textStream() {
-      yield "answer";
-    }
-    await expect(
-      consumeConfirmedAgentStream({
-        textStream: textStream(),
-        completed: Promise.resolve(),
-        usage: { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-      })
-    ).rejects.toThrow("confirmed token usage");
   });
 });
 
@@ -740,5 +698,4 @@ describe("agent handoff, tracing, and comparison metadata", () => {
     );
     expect(evaluation.recommendedAgent).toBe("technical_support");
   });
-
 });

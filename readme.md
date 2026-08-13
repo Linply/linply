@@ -10,7 +10,7 @@ There is no cross-workspace administrator; every row is isolated by `workspaceId
 
 - Frontend: React 19, Tailwind CSS 4, shadcn/ui, wouter
 - Data & API: tRPC 11, React Query
-- Backend: Express 4, OpenAI Agents SDK
+- Backend: Express 4, pi agent SDK (`@earendil-works/pi-coding-agent`)
 - Storage: PostgreSQL 16 + pgvector, Drizzle ORM; Redis session cache + BullMQ; S3-compatible object storage
 - Embeddings: local `BAAI/bge-small-zh-v1.5` (512-dim) / OpenAI / Voyage
 - Auth: email + password, Google OAuth, database sessions, workspace-scoped
@@ -42,7 +42,7 @@ The catalog lives in `shared/plans.ts`. The server enforces limits from it and t
   try it once → plug it in. New accounts land here before the workspace.
 - **Knowledge** — paste Q&A, upload Markdown/CSV (multipart direct upload + BullMQ
   streaming parse), embedding backfill, conflict detection, prompt-injection scanning.
-- **Agent** — OpenAI Agents SDK with knowledge and ticket tools. The system prompt is
+- **Agent** — pi agent SDK with knowledge and ticket tools, multimodal input (images inline, PDFs as extracted text), and one settings document per workspace. The system prompt is
   generated per workspace from its persona. SSE streaming with reconnect/replay.
 - **Channels** — Telegram connects by pasting a bot token (webhook when a public HTTPS
   origin exists, otherwise automatic `getUpdates` polling). Sign-in-free share link at

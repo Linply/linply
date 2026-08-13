@@ -44,6 +44,14 @@ function getStorageClient() {
   return storageClient;
 }
 
+/**
+ * Chat attachments live in the same bucket under their own prefix, so they
+ * share this client and its configuration rather than standing up a second one.
+ */
+export function getObjectStorageClient() {
+  return getStorageClient();
+}
+
 export function calculateMultipartPartSize(fileSize: number) {
   const configured = ENV.knowledgeUploadPartSizeMb * 1024 * 1024; // 将配置的 MiB 分片大小换算为字节
   const required = Math.ceil(fileSize / MAX_MULTIPART_PARTS); // 为保证分片数不超过 10,000 所需的最小分片大小

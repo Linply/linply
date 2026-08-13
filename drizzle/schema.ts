@@ -18,6 +18,8 @@ import {
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
+import type { AiSettingsOverrides } from "../shared/aiSettings";
+import type { MessageAttachment } from "../shared/attachments";
 import {
   KNOWLEDGE_DOCUMENT_STATUSES,
   KNOWLEDGE_SECURITY_STATUSES,
@@ -267,6 +269,11 @@ export const workspaces = pgTable(
       .notNull(), // professional | friendly | concise，用于生成 Agent 语气指令
     /** 回答用哪个模型；为空表示跟随部署的 OPENAI_MODEL。 */
     agentModel: varchar("agentModel", { length: 128 }),
+    /**
+     * 工作区级 AI 设置覆盖，形状见 shared/aiSettings.ts。只存本工作区改过的字段，
+     * 其余继承部署级默认值；越界的覆盖会在解析时整层丢弃。
+     */
+    agentSettings: jsonb("agentSettings").$type<AiSettingsOverrides>(),
     greeting: text("greeting"), // 会话开场白；为空时使用默认文案
     fallbackReply: text("fallbackReply"), // 知识库无法回答时的兜底话术
     businessContext: text("businessContext"), // 用户填写的业务简介，作为 Agent 的背景知识
@@ -702,6 +709,8 @@ export const chatMessages = pgTable(
     }), // 消息来源渠道
     role: chatMessageRoleEnum("role").notNull(), // 消息角色
     content: text("content").notNull(), // 消息内容
+    /** 随消息上传的图片/文件；只存对象存储 key 与元信息，不存字节。 */
+    attachments: jsonb("attachments").$type<MessageAttachment[]>(),
     relatedKnowledgeIds: jsonb("relatedKnowledgeIds").$type<number[]>(), // 关联的知识库 ID 列表
     relatedKnowledgeSnapshot: jsonb("relatedKnowledgeSnapshot").$type<
       Array<{
@@ -797,6 +806,8 @@ export const agentRuns = pgTable(
     ticketId: integer("ticketId"),
     status: agentRunStatusEnum("status").default("queued").notNull(),
     input: text("input").notNull(),
+    /** 触发本次运行的附件，重试时据此重建多模态输入。 */
+    attachments: jsonb("attachments").$type<MessageAttachment[]>(),
     finalOutput: text("finalOutput"),
     error: text("error"),
     llmProvider: varchar("llmProvider", { length: 32 }),

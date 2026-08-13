@@ -9,10 +9,10 @@
 
 - 前端：React 19、Tailwind CSS 4、shadcn/ui、wouter
 - 数据与接口：tRPC 11、React Query
-- 后端：Express 4、OpenAI Agents SDK
+- 后端：Express 4、pi Agent SDK（`@earendil-works/pi-coding-agent`）
 - 数据库、队列与存储：PostgreSQL 16 + pgvector、Drizzle ORM；Redis Session 缓存 + BullMQ；S3 兼容对象存储
 - 向量服务：本地 `BAAI/bge-small-zh-v1.5`（512 维）/ OpenAI / Voyage
-- LLM：OpenAI Agents SDK
+- LLM：pi Agent SDK，接 OpenAI 兼容网关；支持图片多模态输入
 - 认证：邮箱密码 + Google OAuth、数据库 Session、按工作区隔离
 - 渠道：Telegram Bot（webhook / 轮询）、免登录分享链接
 
@@ -35,7 +35,7 @@
 - **工作区**：注册即自动开通，包含名称、客服人设（名称/语气/业务背景/兜底话术）和一条内置的 `web` 渠道。
 - **新用户引导**：`/onboarding` 四步向导——介绍业务 → 导入知识 → 试聊一次 → 接出去，走完才进工作台。
 - **知识库**：粘贴问答、上传 Markdown/CSV（multipart 直传 + BullMQ 流式解析）、embedding 回填、冲突检测、Prompt Injection 扫描。
-- **智能客服**：OpenAI Agents SDK 调用知识库与工单工具；系统提示词按工作区人设动态生成；SSE 流式事件与断线恢复。
+- **智能客服**：pi Agent SDK 调用知识库与工单工具（内置编码工具全部关闭）；系统提示词按工作区人设动态生成；支持随消息发送图片与 PDF；SSE 流式事件与断线恢复。
 - **渠道接入**：Telegram 粘贴 Bot Token 即接入（有公网 HTTPS 用 webhook，否则自动回落轮询）；免登录分享链接 `/a/:publicKey`。Slack / 飞书在渠道页标注为规划中。
 - **客户会话**：外部访客以 `channel_contacts` 记录，不注册不登录；工作区所有者在「客户会话」只读查看完整对话。
 - **工单**：客服答不上来时转人工产生的记录，同样按工作区隔离。
@@ -101,7 +101,8 @@ cp .env.example .env
 - `LOCAL_EMBEDDING_RUNTIME_MODEL=Xenova/bge-small-zh-v1.5`：app 内置 Transformers.js endpoint 的运行模型。
 - `LOCAL_EMBEDDING_API_KEY`：可选；设置后 `/v1/embeddings` 需要 Bearer token。
 - `RAG_EMBEDDINGS_ENABLED=true|false`：关闭后使用关键词检索兜底。
-- `AGENT_TRACING_ENABLED=false`：开启 OpenAI Agents tracing 时仍不包含敏感原始数据。
+- `AGENT_SETTINGS={...}`：部署级 AI 设置文档，形状见 `shared/aiSettings.ts`；工作区可在其上再覆盖（含多模态开关与上限）。
+- `AGENT_TRACING_ENABLED=false`：仅记录到 Run 元数据；链路追踪走 OTEL。
 - `OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=...`：通过 OTLP/HTTP 导出 Web、Worker、Agent 工具和模型 HTTP 链路；Web 与 Worker 应使用同一 Collector。
 - `OPENAI_CONTEXT_WINDOW_TOKENS=272000`：仅用于聊天和 Run 详情中的 Token 窗口占比参考。
 - `AGENT_EXECUTION_MODE=inline|worker`：本地默认 `inline`；Railway Web 服务使用 `worker`，只负责创建 queued Run。

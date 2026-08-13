@@ -1,4 +1,8 @@
 import type { AgentRun } from "../drizzle/schema";
+import {
+  type MessageAttachment,
+  parseMessageAttachments,
+} from "../shared/attachments";
 import { SpanStatusCode } from "@opentelemetry/api";
 import { ENV } from "./_core/env";
 import {
@@ -13,7 +17,7 @@ import {
   parseAgentWriteAuthorization,
 } from "./agentPolicy";
 import * as db from "./db";
-import { streamAgentChatResponse } from "./agentService";
+import { AGENT_LLM_PROVIDER, streamAgentChatResponse } from "./agentService";
 import { resolveWorkspaceModel } from "./agentModelCatalog";
 import type { ConversationScope } from "./workspace";
 
@@ -94,6 +98,8 @@ export async function enqueueAgentRun(input: {
   ticketId?: number;
   content: string;
   retryOfRunId?: string;
+  /** Images and documents the customer attached to this message. */
+  attachments?: MessageAttachment[];
 }) {
   const telemetry = getActiveTraceContext();
   const authorization = deriveAgentWriteAuthorization(input.content);
@@ -107,8 +113,9 @@ export async function enqueueAgentRun(input: {
     channelId: input.scope.channelId,
     ticketId: input.ticketId,
     input: input.content,
+    attachments: input.attachments,
     status: "queued",
-    llmProvider: "openai-agents",
+    llmProvider: AGENT_LLM_PROVIDER,
     llmModel: model,
     retryOfRunId: input.retryOfRunId,
     traceId: telemetry?.traceId,
@@ -124,7 +131,7 @@ export async function enqueueAgentRun(input: {
   await appendAgentStreamEvent(run.id, "meta", {
     relatedKnowledge: [],
     retrieval: null,
-    llmProvider: "openai-agents",
+    llmProvider: AGENT_LLM_PROVIDER,
     runId: run.id,
   });
   if (ENV.agentExecutionMode === "inline") {
@@ -195,6 +202,9 @@ async function executeAgentRunInternal(
         scope,
         ticketId: run.ticketId ?? undefined,
         content: run.input,
+        // Re-read from the run rather than the message, so a retry rebuilds the
+        // same multimodal input the first attempt was given.
+        attachments: parseMessageAttachments(run.attachments),
         authorization,
         retryOfRunId: run.retryOfRunId ?? undefined,
         executionFence: worker
@@ -222,13 +232,13 @@ async function executeAgentRunInternal(
     await appendAgentStreamEvent(run.id, "meta", {
       relatedKnowledge: result.relatedKnowledgeSnapshot,
       retrieval: result.retrieval ?? null,
-      llmProvider: "openai-agents",
+      llmProvider: AGENT_LLM_PROVIDER,
       runId: result.runId,
       structuredOutput: result.structuredOutput,
       attemptCount: run.attemptCount,
     });
     await appendAgentStreamEvent(run.id, "done", {
-      llmProvider: "openai-agents",
+      llmProvider: AGENT_LLM_PROVIDER,
       llmModel: result.llmModel,
       stats: { ...result.runStats, usageState: "actual" },
       attemptCount: run.attemptCount,
