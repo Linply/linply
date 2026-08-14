@@ -2,7 +2,7 @@
 
 ## 关键环境变量
 
-- `DATABASE_URL`：生产 PostgreSQL + pgvector 连接串。上线前执行 `pnpm db:migrate`。
+- `DATABASE_URL`：生产 PostgreSQL + pgvector 连接串。Web Service 通过 `railway.json` 的 `preDeployCommand` 自动执行 `pnpm db:migrate`；首次初始化或故障恢复时才手动执行。
 - `REDIS_URL`：可选的 Web 登录 Session 缓存；Redis 故障时回退 PostgreSQL。Railway 可使用 `${{Redis.REDIS_URL}}` 引用 Redis Service。
 - `QUEUE_REDIS_URL`：BullMQ 队列连接；Web 和 `knowledge-worker` 必须一致。BullMQ 使用的 Redis 应采用 `noeviction` 策略。
 - `AWS_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_S3_BUCKET_NAME` / `AWS_DEFAULT_REGION`：Railway Bucket 的 S3 兼容连接配置，Web 和 `knowledge-worker` 都需要。
@@ -19,7 +19,7 @@
 ## 部署步骤
 
 1. 安装依赖并构建：`pnpm install --frozen-lockfile && pnpm build`。
-2. 准备数据库：安装 pgvector，设置 `DATABASE_URL`，执行 `pnpm db:migrate`。
+2. 准备数据库：安装 pgvector，设置 `DATABASE_URL`。确认 Web Service 的 Config File Path 指向 `/railway.json`，由 Railway 在部署前执行 `pnpm db:migrate`。
 3. 创建 Redis Service；Web 配置 `REDIS_URL`，Web 和 Knowledge Worker 配置相同的 `QUEUE_REDIS_URL`。
 4. 配置 OpenAI 兼容模型和 embedding 服务。
 5. 在 Google Cloud Console 配置 `${APP_BASE_URL}/api/auth/oauth/google/callback`。

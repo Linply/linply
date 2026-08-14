@@ -122,6 +122,7 @@ pnpm start            # run the production build
 pnpm worker           # agent worker
 pnpm knowledge:worker # knowledge worker
 pnpm db:generate      # generate a migration from the schema
+pnpm db:check         # validate migration history
 pnpm db:migrate       # apply migrations
 pnpm db:seed          # sample workspace
 pnpm auth:create-user # create an account and provision its workspace
@@ -157,12 +158,17 @@ database sessions, knowledge parsing, ticket smoke flow.
 
 1. Set production environment variables — `DATABASE_URL`, `APP_BASE_URL`, model and
    embedding config.
-2. Run `pnpm db:migrate`.
-3. Run `pnpm kb:embed` to backfill vectors; switching embedding models resets old vectors.
-4. Point the Google OAuth callback at `${APP_BASE_URL}/api/auth/oauth/google/callback`.
-5. Create an `agent-worker` service and set `AGENT_EXECUTION_MODE=worker` on the web service.
-6. Create object storage and a `knowledge-worker` service, then run `pnpm kb:storage:cors` once.
-7. Start with `NODE_ENV=production pnpm start` and verify: email sign-in, Google sign-in,
+2. The web service uses `railway.json`'s `preDeployCommand` (`pnpm db:migrate`), so
+   Railway applies committed migrations before starting each new deployment. Make
+   sure the Railway web service's Config File Path points to `/railway.json` (or the
+   repository root) and that its production environment contains `DATABASE_URL`.
+3. Run `pnpm db:migrate` manually only for the initial setup or a recovery; do not run
+   a second migration job from GitHub Actions against the same production database.
+4. Run `pnpm kb:embed` to backfill vectors; switching embedding models resets old vectors.
+5. Point the Google OAuth callback at `${APP_BASE_URL}/api/auth/oauth/google/callback`.
+6. Create an `agent-worker` service and set `AGENT_EXECUTION_MODE=worker` on the web service.
+7. Create object storage and a `knowledge-worker` service, then run `pnpm kb:storage:cors` once.
+8. Start with `NODE_ENV=production pnpm start` and verify: email sign-in, Google sign-in,
    **cross-workspace isolation**, multipart upload, knowledge parsing, agent run lease
    recovery, and the Telegram webhook at `${APP_BASE_URL}/api/channels/telegram/:secret`.
 

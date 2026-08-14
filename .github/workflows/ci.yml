@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Validate migration history
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/migration_check
+        run: pnpm db:check
+
+      - name: Ensure schema changes include a committed migration
+        env:
+          # drizzle.config.ts only needs a URL while generating SQL; this job
+          # must never connect to the production database.
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/migration_check
+        run: |
+          pnpm db:generate
+          if [[ -n "$(git status --porcelain --untracked-files=all -- drizzle)" ]]; then
+            echo "Schema and migrations are out of sync. Generate and commit the migration with: pnpm db:generate"
+            git status --short -- drizzle
+            exit 1
+          fi

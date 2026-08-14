@@ -17,6 +17,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit migrate",
     "db:seed": "node scripts/seed-data.mjs",

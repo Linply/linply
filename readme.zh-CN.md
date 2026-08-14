@@ -122,6 +122,7 @@ pnpm worker:dev     # 本地开发 Agent worker
 pnpm knowledge:worker     # 启动生产知识库 Worker
 pnpm knowledge:worker:dev # 本地开发知识库 Worker
 pnpm db:generate    # 根据 schema 生成迁移
+pnpm db:check       # 校验迁移历史
 pnpm db:migrate     # 应用迁移
 pnpm db:seed        # 初始化示例数据
 pnpm auth:create-user  # 创建账号并开通其工作区
@@ -212,12 +213,14 @@ worker 会在 Railway 分配的 `PORT` 上提供内部 `/api/health` 探针，�
 ## 部署要点
 
 1. 设置生产环境变量，尤其是 `DATABASE_URL`、`APP_BASE_URL`、LLM 和 embedding 配置。
-2. 执行 `pnpm db:migrate`。
-3. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
-4. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
-5. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
-6. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
-7. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查：邮箱登录、Google 登录、**跨工作区隔离**、
+2. Web Service 使用 `railway.json` 中的 `preDeployCommand: pnpm db:migrate`，Railway 会在每次部署启动前自动应用已提交的迁移。请在 Railway 的 Web Service 中确认 Config File Path 指向 `/railway.json`（或仓库根目录），并确认生产环境配置了 `DATABASE_URL`。
+3. GitHub Actions 会在 PR 和 `main` push 上运行 `pnpm db:check`，并重新生成迁移检查 `schema.ts` 是否有未提交的迁移；检查失败时不会放行合并。该 CI 不连接生产数据库。
+4. 仅首次初始化或故障恢复时手动执行 `pnpm db:migrate`，不要再在 GitHub Actions 中对同一个生产库重复执行迁移。
+5. 执行 `pnpm kb:embed` 回填知识库向量；切换模型后旧向量会被重置，需要重新生成。
+6. 在 Google Cloud Console 把授权回调 URI 配置为 `${APP_BASE_URL}/api/auth/oauth/google/callback`。
+7. 创建名为 `agent-worker` 的独立 Service；共享 `/railway.json` 会按服务名启动 `pnpm worker`，并给 Web 服务设置 `AGENT_EXECUTION_MODE=worker`。
+8. 创建 Railway Bucket 和名为 `knowledge-worker` 的独立 Service，注入相同的 Bucket、Redis、数据库和 embedding 配置，并执行一次 `pnpm kb:storage:cors`。
+9. 使用 `NODE_ENV=production pnpm start` 启动 Web 服务并检查：邮箱登录、Google 登录、**跨工作区隔离**、
    分片上传、知识库解析、Agent Run 租约恢复，以及 Telegram webhook（`${APP_BASE_URL}/api/channels/telegram/:secret`）。
 
 更完整的上线清单见 [references/deployment-readiness.md](references/deployment-readiness.md)。
