@@ -6,6 +6,21 @@ dotenv.config({ path: [".env.local", ".env"] });
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+/**
+ * 检索只认 embeddingStatus = 'completed' 的条目。关闭 embedding 时应用侧
+ * （reindexKnowledgeEntry）就是把条目直接标成 completed 走关键词兜底，seed 必须
+ * 保持一致，否则种出来的知识库在本地永远搜不到。开启时留 pending，交给 kb:embed 回填。
+ */
+const embeddingsEnabled = (() => {
+  if (process.env.RAG_EMBEDDINGS_ENABLED === "false") return false;
+  const provider = process.env.EMBEDDING_PROVIDER ?? "local";
+  if (provider === "local") return true;
+  if (provider === "voyage") return Boolean(process.env.VOYAGE_API_KEY);
+  if (provider === "openai") return Boolean(process.env.OPENAI_API_KEY);
+  return false;
+})();
+const seedEmbeddingStatus = embeddingsEnabled ? "pending" : "completed";
+
 const hashPassword = async (password) => {
   const salt = randomBytes(16);
   const derivedKey = await new Promise((resolve, reject) => {
@@ -155,18 +170,20 @@ async function seedData() {
             category = ${kb.category},
             keywords = ${kb.keywords},
             embedding = NULL,
-            "embeddingStatus" = 'pending',
+            "embeddingStatus" = ${seedEmbeddingStatus},
             "updatedAt" = now()
           WHERE id = ${existingEntry.id}
         `;
       } else {
         await sql`
-          INSERT INTO knowledge_base ("workspaceId", title, content, category, keywords)
-          VALUES (${seedWorkspaceId}, ${kb.title}, ${kb.content}, ${kb.category}, ${kb.keywords})
+          INSERT INTO knowledge_base ("workspaceId", title, content, category, keywords, "embeddingStatus")
+          VALUES (${seedWorkspaceId}, ${kb.title}, ${kb.content}, ${kb.category}, ${kb.keywords}, ${seedEmbeddingStatus})
         `;
       }
     }
-    console.log(`已准备 ${knowledgeData.length} 条知识库数据`);
+    console.log(
+      `已准备 ${knowledgeData.length} 条知识库数据（embeddingStatus=${seedEmbeddingStatus}${embeddingsEnabled ? "，请运行 pnpm kb:embed 回填向量" : "，关键词检索可直接命中"}）`
+    );
 
     const ticketData = [
       {
